@@ -6364,12 +6364,12 @@ local function buildOnline()
     local s=tabC["Online"].scroll;local Y=8
     mkSL(s,Y,"Community");Y=Y+SEC_H+GAP
     mkBtn(s,Y,"Join Discord",function()
-        local url="https://discord.gg/chudhub"
+        local url="https://discord.gg/z8Au2fBMxb"
         pcall(function() if setclipboard then setclipboard(url) end end)
-        showPopup("Discord","Link copied — discord.gg/chudhub",T.ac)
+        showPopup("Discord","Link copied — https://discord.gg/z8Au2fBMxb",T.ac)
     end);Y=Y+TOG_H+GAP
     mkBtn(s,Y,"Open Website",function()
-        local url="https://chudhub.example"
+        local url="https://Proxy-Phalanxs.github.io"
         pcall(function() if setclipboard then setclipboard(url) end end)
         showPopup("Website","Link copied to clipboard",T.ac)
     end);Y=Y+TOG_H+GAP
