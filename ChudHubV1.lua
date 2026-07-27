@@ -67,6 +67,8 @@ local function updCards()
     end
 end
 
+local CH_VERSION="v1.0.1"
+
 local plr=Players.LocalPlayer
 local LocalPlayer=plr
 local char=plr.Character or plr.CharacterAdded:Wait()
@@ -246,6 +248,37 @@ local S={
     focusMode=false, -- if true, RPG/aim only hit focusTargets
     targetHudOn=false,
     espAvatar=true,
+    -- Kill log (persisted across accounts via writefile)
+    killLog={}, totalKills=0, totalDeaths=0,
+    -- Hitlist
+    hitlist={}, -- [userId] = {userId,name,displayName,priority,desc,created}
+    hitlistAlertOn=true, joinSniperOn=false, joinSniperTarget=nil,
+    -- World lock
+    clockLock=false, lockedClockTime=12, nightModeOn=false,
+    -- Spin client lock (local orientation free while body still spins for others)
+    spinClientLock=false,
+    -- Bhop
+    bhopOn=false, bhopMult=1, bhopHolding=false, bhopBaseSpeed=16,
+    -- Lag switch
+    lagSwitchOn=false,
+    -- Character refresh restore payload
+    _refreshRestore=nil,
+    -- Bhop extras
+    bhopSnappy=false, bhopSpeed=16, bhopJump=50, bhopMode="Classic",
+    -- Radar style: Default | Dot | Cross | Grid | Minimal
+    radarStyle="Default",
+    -- Anti RPG / exploiter / streamer / UI glass
+    antiRpgOn=false, exploiterAlertOn=false, streamerMode=false,
+    uiStyle="Solid", -- Solid | Acrylic | Glass | Mica | Liquid
+    espVisAlpha=0, -- Drawing transparency 0=opaque, 1=invisible
+    _suppressNotifs=true,
+    _settingClock=false,
+    _espOnSeats=true,
+    _rpgGrabLoop=false,
+    _vehicleStealBusy=false,
+    bulletCountZero=false,
+    vehFireRate=nil,
+    vehFireRateLoop=false,
 }
 S.rlabel=plr.Name.."Rocket0"
 
@@ -843,6 +876,564 @@ end
 local function isMyPart(p) return S.myBase and p:IsDescendantOf(S.myBase) end
 task.spawn(function() while not S.myBase and not S.dead do findBase();task.wait(2) end end)
 
+-- ===== Kill Log (global file, shared across accounts on this machine) =====
+local KILL_FILE="CHUDHUB_kills.json"
+local function loadKillLog()
+    local ok,data=pcall(function()
+        if isfile and isfile(KILL_FILE) then
+            return game:GetService("HttpService"):JSONDecode(readfile(KILL_FILE))
+        end
+    end)
+    if ok and type(data)=="table" then
+        S.totalKills=tonumber(data.totalKills) or 0
+        S.totalDeaths=tonumber(data.totalDeaths) or 0
+        S.killLog=type(data.kills)=="table" and data.kills or {}
+        return
+    end
+    S.killLog={};S.totalKills=0;S.totalDeaths=0
+end
+local function saveKillLog()
+    pcall(function()
+        if not writefile then return end
+        -- keep last 250 entries
+        while #S.killLog>250 do table.remove(S.killLog,1) end
+        writefile(KILL_FILE,game:GetService("HttpService"):JSONEncode({
+            totalKills=S.totalKills,totalDeaths=S.totalDeaths,kills=S.killLog
+        }))
+    end)
+end
+local function logKill(victim)
+    if not victim or victim==plr then return end
+    S.totalKills=(S.totalKills or 0)+1
+    table.insert(S.killLog,{
+        type="kill",
+        name=victim.Name,
+        displayName=victim.DisplayName or victim.Name,
+        userId=victim.UserId,
+        time=os.time(),
+        placeId=game.PlaceId,
+    })
+    saveKillLog()
+    pcall(function()
+        local sp=rawget(_G,"CH_showPopup")
+        if type(sp)=="function" then
+            sp("Kill +"..tostring(S.totalKills),victim.DisplayName or victim.Name,T.ok)
+        end
+    end)
+end
+local function logDeath()
+    S.totalDeaths=(S.totalDeaths or 0)+1
+    table.insert(S.killLog,{
+        type="death",
+        name=plr.Name,
+        displayName=plr.DisplayName or plr.Name,
+        userId=plr.UserId,
+        time=os.time(),
+        placeId=game.PlaceId,
+    })
+    saveKillLog()
+end
+loadKillLog()
+-- Current character death
+pcall(function()
+    if hum then
+        hum.Died:Connect(function() logDeath() end)
+    end
+end)
+
+-- Track other players' deaths (local kill attribution)
+local function bindPlayerDeath(p)
+    if not p or p==plr then return end
+    local function attach(c)
+        local h=c and c:FindFirstChildOfClass("Humanoid")
+        if not h then return end
+        h.Died:Connect(function()
+            -- Attribute kill if we were actively fighting / nearby
+            local okAttr=false
+            if S.spamOn or S.focusMode then
+                if S.focusTargets[p.Name] or S.spamOn then okAttr=true end
+            end
+            local th=c:FindFirstChild("HumanoidRootPart")
+            if th and hrp and (th.Position-hrp.Position).Magnitude<180 then okAttr=true end
+            if okAttr then logKill(p) end
+        end)
+    end
+    if p.Character then attach(p.Character) end
+    p.CharacterAdded:Connect(function(c) task.defer(function() attach(c) end) end)
+end
+for _,p in ipairs(Players:GetPlayers()) do bindPlayerDeath(p) end
+Players.PlayerAdded:Connect(bindPlayerDeath)
+
+-- ===== Hitlist =====
+local HITLIST_FILE="CHUDHUB_hitlist.json"
+local function loadHitlist()
+    local ok,data=pcall(function()
+        if isfile and isfile(HITLIST_FILE) then
+            return game:GetService("HttpService"):JSONDecode(readfile(HITLIST_FILE))
+        end
+    end)
+    if ok and type(data)=="table" then
+        S.hitlist={}
+        for _,e in ipairs(data) do
+            if e and e.userId then S.hitlist[tostring(e.userId)]=e end
+        end
+    end
+end
+local function saveHitlist()
+    pcall(function()
+        if not writefile then return end
+        local arr={}
+        for _,e in pairs(S.hitlist) do arr[#arr+1]=e end
+        writefile(HITLIST_FILE,game:GetService("HttpService"):JSONEncode(arr))
+    end)
+end
+loadHitlist()
+
+local function fetchRobloxUser(query)
+    -- query can be username, display name, or userId
+    local Http=game:GetService("HttpService")
+    local uid=tonumber(query)
+    local profile=nil
+    -- first: match players currently in server by display name / username
+    if not uid then
+        local q=tostring(query):lower()
+        for _,p in ipairs(Players:GetPlayers()) do
+            if p.Name:lower()==q or (p.DisplayName and p.DisplayName:lower()==q) or (p.DisplayName and p.DisplayName:lower():find(q,1,true)) then
+                uid=p.UserId
+                break
+            end
+        end
+    end
+    if uid then
+        local ok,body=pcall(function()
+            return game:HttpGet("https://users.roblox.com/v1/users/"..tostring(uid))
+        end)
+        if ok and body then
+            local d=Http:JSONDecode(body)
+            if d and d.id then
+                profile={userId=d.id,name=d.name,displayName=d.displayName,description=d.description or "",created=d.created,isBanned=d.isBanned}
+            end
+        end
+    else
+        local ok,body=pcall(function()
+            return game:HttpGet("https://users.roblox.com/v1/usernames/users",true)
+        end)
+        -- POST preferred; fallback to older endpoint
+        local ok2,body2=pcall(function()
+            return game:HttpGet("https://api.roblox.com/users/get-by-username?username="..Http:UrlEncode(query))
+        end)
+        if ok2 and body2 then
+            local d=Http:JSONDecode(body2)
+            if d and (d.Id or d.id) then
+                uid=d.Id or d.id
+                local ok3,body3=pcall(function() return game:HttpGet("https://users.roblox.com/v1/users/"..tostring(uid)) end)
+                if ok3 and body3 then
+                    local d3=Http:JSONDecode(body3)
+                    profile={userId=d3.id,name=d3.name,displayName=d3.displayName,description=d3.description or "",created=d3.created,isBanned=d3.isBanned}
+                else
+                    profile={userId=uid,name=d.Username or d.username or query,displayName=d.Username or query,description="",created="",isBanned=false}
+                end
+            end
+        end
+        -- modern username lookup via POST-like alternative if available
+        if not profile then
+            local okp,resp=pcall(function()
+                if request then
+                    local r=request({
+                        Url="https://users.roblox.com/v1/usernames/users",
+                        Method="POST",
+                        Headers={["Content-Type"]="application/json"},
+                        Body=Http:JSONEncode({usernames={query},excludeBannedUsers=false})
+                    })
+                    return r and r.Body
+                elseif syn and syn.request then
+                    local r=syn.request({
+                        Url="https://users.roblox.com/v1/usernames/users",
+                        Method="POST",
+                        Headers={["Content-Type"]="application/json"},
+                        Body=Http:JSONEncode({usernames={query},excludeBannedUsers=false})
+                    })
+                    return r and r.Body
+                end
+            end)
+            if okp and resp then
+                local d=Http:JSONDecode(resp)
+                local data=d and d.data and d.data[1]
+                if data and data.id then
+                    uid=data.id
+                    local ok3,body3=pcall(function() return game:HttpGet("https://users.roblox.com/v1/users/"..tostring(uid)) end)
+                    if ok3 and body3 then
+                        local d3=Http:JSONDecode(body3)
+                        profile={userId=d3.id,name=d3.name,displayName=d3.displayName,description=d3.description or "",created=d3.created,isBanned=d3.isBanned}
+                    else
+                        profile={userId=uid,name=data.name or query,displayName=data.displayName or query,description="",created="",isBanned=false}
+                    end
+                end
+            end
+        end
+    end
+    if profile then
+        -- extra presence / friends count optional
+        pcall(function()
+            local okf,fb=pcall(function() return game:HttpGet("https://friends.roblox.com/v1/users/"..tostring(profile.userId).."/followers/count") end)
+            if okf and fb then
+                local fd=Http:JSONDecode(fb);profile.followers=fd and fd.count or nil
+            end
+        end)
+        pcall(function()
+            local okf,fb=pcall(function() return game:HttpGet("https://friends.roblox.com/v1/users/"..tostring(profile.userId).."/followings/count") end)
+            if okf and fb then
+                local fd=Http:JSONDecode(fb);profile.followings=fd and fd.count or nil
+            end
+        end)
+        pcall(function()
+            local okf,fb=pcall(function() return game:HttpGet("https://friends.roblox.com/v1/users/"..tostring(profile.userId).."/friends/count") end)
+            if okf and fb then
+                local fd=Http:JSONDecode(fb);profile.friends=fd and fd.count or nil
+            end
+        end)
+    end
+    return profile
+end
+
+local function showHitlistBanner(entry,playerObj)
+    if not S.hitlistAlertOn then return end
+    local parentGui=nil
+    pcall(function()
+        if sg and sg.Parent then parentGui=sg end
+    end)
+    if not parentGui then
+        pcall(function()
+            parentGui=plr:FindFirstChild("PlayerGui")
+            if parentGui then
+                local existing=parentGui:FindFirstChild("ChudHubUI")
+                if existing then parentGui=existing
+                else
+                    local tmp=Instance.new("ScreenGui");tmp.Name="CH_HitlistTemp";tmp.ResetOnSpawn=false;tmp.Parent=parentGui;parentGui=tmp
+                end
+            end
+        end)
+    end
+    if not parentGui then return end
+    local banner=Instance.new("Frame")
+    banner.Name="CH_HitlistBanner"
+    banner.Size=UDim2.new(0,420,0,90)
+    banner.AnchorPoint=Vector2.new(0.5,0)
+    banner.Position=UDim2.new(0.5,0,0,-100)
+    banner.BackgroundColor3=Color3.fromRGB(18,8,12)
+    banner.BackgroundTransparency=0.08
+    banner.BorderSizePixel=0
+    banner.ZIndex=120
+    banner.Parent=parentGui
+    local c=Instance.new("UICorner");c.CornerRadius=UDim.new(0,12);c.Parent=banner
+    local st=Instance.new("UIStroke");st.Color=Color3.fromRGB(248,113,113);st.Thickness=2;st.Parent=banner
+    local av=Instance.new("ImageLabel")
+    av.Size=UDim2.new(0,64,0,64);av.Position=UDim2.new(0,12,0.5,-32)
+    av.BackgroundColor3=Color3.fromRGB(30,20,24);av.BorderSizePixel=0
+    av.Image=getAvatarThumb(entry.userId or (playerObj and playerObj.UserId) or 1,100)
+    av.ZIndex=121;av.Parent=banner
+    local ac=Instance.new("UICorner");ac.CornerRadius=UDim.new(1,0);ac.Parent=av
+    local title=Instance.new("TextLabel")
+    title.Size=UDim2.new(1,-100,0,28);title.Position=UDim2.new(0,90,0,12)
+    title.BackgroundTransparency=1;title.Text="⚠ HITLIST TARGET IN SERVER"
+    title.TextColor3=Color3.fromRGB(248,113,113);title.Font=Enum.Font.GothamBold;title.TextSize=16
+    title.TextXAlignment=Enum.TextXAlignment.Left;title.ZIndex=121;title.Parent=banner
+    local sub=Instance.new("TextLabel")
+    sub.Size=UDim2.new(1,-100,0,36);sub.Position=UDim2.new(0,90,0,42)
+    sub.BackgroundTransparency=1
+    sub.Text=(entry.displayName or entry.name or "?").."  @"..(entry.name or "?").."  ·  UID "..tostring(entry.userId or "?")
+    sub.TextColor3=Color3.fromRGB(230,230,235);sub.Font=Enum.Font.Gotham;sub.TextSize=13
+    sub.TextXAlignment=Enum.TextXAlignment.Left;sub.TextWrapped=true;sub.ZIndex=121;sub.Parent=banner
+    TwS:Create(banner,TweenInfo.new(0.4,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{
+        Position=UDim2.new(0.5,0,0,18)
+    }):Play()
+    pcall(function() if type(playSFX)=="function" then playSFX("notify",0.6) end end)
+    task.delay(6,function()
+        if banner and banner.Parent then
+            TwS:Create(banner,TweenInfo.new(0.3),{Position=UDim2.new(0.5,0,0,-120),BackgroundTransparency=1}):Play()
+            task.wait(0.35);banner:Destroy()
+        end
+    end)
+end
+
+local function checkHitlistPlayer(p)
+    if not p or p==plr then return end
+    local e=S.hitlist[tostring(p.UserId)]
+    if e then
+        showHitlistBanner(e,p)
+        if S.joinSniperOn then
+            pcall(function()
+                local sp=rawget(_G,"CH_showPopup")
+                if type(sp)=="function" then
+                    sp("Join Sniper","Target found: "..(e.displayName or e.name),T.ng)
+                end
+            end)
+        end
+    end
+end
+for _,p in ipairs(Players:GetPlayers()) do task.defer(checkHitlistPlayer,p) end
+Players.PlayerAdded:Connect(function(p) task.delay(0.5,function() checkHitlistPlayer(p) end) end)
+
+-- Clock lock: only correct when the game changes ClockTime (no flicker fight)
+pcall(function()
+    Li:GetPropertyChangedSignal("ClockTime"):Connect(function()
+        if S._settingClock then return end
+        if not (S.clockLock or S.nightModeOn) then return end
+        local t=S.nightModeOn and 0 or (S.lockedClockTime or 12)
+        if math.abs((Li.ClockTime or 0)-t)>0.01 then
+            S._settingClock=true
+            pcall(function() Li.ClockTime=t end)
+            task.defer(function() S._settingClock=false end)
+        end
+    end)
+end)
+-- slow safety tick (every 2s) in case PropertyChanged is blocked
+task.spawn(function()
+    while true do
+        task.wait(2)
+        if S.clockLock or S.nightModeOn then
+            local t=S.nightModeOn and 0 or (S.lockedClockTime or 12)
+            if not S._settingClock and math.abs((Li.ClockTime or 0)-t)>0.5 then
+                S._settingClock=true
+                pcall(function() Li.ClockTime=t end)
+                task.defer(function() S._settingClock=false end)
+            end
+        end
+    end
+end)
+
+RS.RenderStepped:Connect(function()
+    -- Spin client-lock: keep local orientation camera-facing so you can move/aim
+    if S.spinOn and S.spinClientLock and hrp and hrp.Parent and not S.flying then
+        local look=cam.CFrame.LookVector
+        local flat=Vector3.new(look.X,0,look.Z)
+        if flat.Magnitude>0.05 then
+            pcall(function()
+                hrp.CFrame=CFrame.new(hrp.Position,hrp.Position+flat)
+            end)
+        end
+    end
+end)
+
+-- ===== Anti RPG Spam (client-side protection) =====
+local function applyAntiRpg(en)
+    S.antiRpgOn=en
+    if S._antiRpgConn then pcall(function() S._antiRpgConn:Disconnect() end);S._antiRpgConn=nil end
+    if S._antiRpgConn2 then pcall(function() S._antiRpgConn2:Disconnect() end);S._antiRpgConn2=nil end
+    if S._antiRpgHb then pcall(function() S._antiRpgHb:Disconnect() end);S._antiRpgHb=nil end
+    if not en then return end
+    -- Rocket spam hits via RocketHit remote + explosions; client can still lock health / strip knockback
+    pcall(function()
+        if hitR then
+            S._antiRpgConn=hitR.OnClientEvent:Connect(function(...)
+                if not S.antiRpgOn or not hum then return end
+                pcall(function() hum.Health=hum.MaxHealth end)
+            end)
+        end
+    end)
+    pcall(function()
+        if expEv then
+            S._antiRpgConn2=expEv.OnClientEvent:Connect(function(...)
+                if not S.antiRpgOn or not hum then return end
+                pcall(function() hum.Health=hum.MaxHealth end)
+            end)
+        end
+    end)
+    -- hard lock: full heal + zero knockback every frame while anti is on
+    S._antiRpgHb=RS.Heartbeat:Connect(function()
+        if not S.antiRpgOn then return end
+        pcall(function()
+            if hum and hum.Parent and hum.Health>0 then
+                if hum.Health<hum.MaxHealth then hum.Health=hum.MaxHealth end
+            end
+            if hrp and hrp.Parent then
+                for _,c in ipairs(hrp:GetChildren()) do
+                    if (c:IsA("BodyVelocity") or c:IsA("LinearVelocity") or c:IsA("VectorForce")) and c~=S.flyBV and c~=S.spinBAV then
+                        pcall(function() c:Destroy() end)
+                    end
+                end
+                -- damp extreme explosion impulses
+                local v=hrp.AssemblyLinearVelocity
+                if v.Magnitude>120 then
+                    hrp.AssemblyLinearVelocity=Vector3.new(v.X*0.2,math.min(v.Y,40),v.Z*0.2)
+                end
+            end
+            for _,o in ipairs(workspace:GetChildren()) do
+                if o:IsA("Explosion") then
+                    pcall(function()
+                        o.BlastPressure=0;o.BlastRadius=0;o.DestroyJointRadiusPercent=0
+                        if hrp and (o.Position-hrp.Position).Magnitude<60 then o:Destroy() end
+                    end)
+                end
+            end
+        end)
+    end)
+end
+
+-- ===== Exploiter Alert (heuristic) =====
+local function scanExploiters()
+    if not S.exploiterAlertOn then return end
+    for _,p in ipairs(Players:GetPlayers()) do
+        if p==plr then continue end
+        local c=p.Character;if not c then continue end
+        local h=c:FindFirstChildOfClass("Humanoid")
+        local r=c:FindFirstChild("HumanoidRootPart")
+        if not h or not r then continue end
+        local flags={}
+        if h.WalkSpeed and h.WalkSpeed>50 then flags[#flags+1]="Speed "..math.floor(h.WalkSpeed) end
+        if h.JumpPower and h.JumpPower>100 then flags[#flags+1]="Jump "..math.floor(h.JumpPower) end
+        -- hitbox expand: HRP far larger than normal (~2,2,1)
+        pcall(function()
+            local sz=r.Size
+            if sz.X>=8 or sz.Y>=8 or sz.Z>=8 then
+                flags[#flags+1]=string.format("Hitbox %.0fx%.0fx%.0f",sz.X,sz.Y,sz.Z)
+            end
+        end)
+        -- other parts oversized (common silent expand)
+        pcall(function()
+            local head=c:FindFirstChild("Head")
+            if head and head.Size.Magnitude>4 then flags[#flags+1]="BigHead" end
+        end)
+        local hasFly=false
+        for _,ch in ipairs(r:GetChildren()) do
+            if ch:IsA("BodyVelocity") or ch:IsA("BodyGyro") or ch:IsA("LinearVelocity") or ch:IsA("AngularVelocity") then
+                hasFly=true;break
+            end
+        end
+        if hasFly and not h.SeatPart then flags[#flags+1]="Fly/BV" end
+        local spin=false
+        pcall(function()
+            if r.AssemblyAngularVelocity and r.AssemblyAngularVelocity.Magnitude>20 then spin=true end
+        end)
+        if spin then flags[#flags+1]="Spin" end
+        -- aimbot heuristic: camera / character rapidly snaps toward local player often
+        pcall(function()
+            S._aimSnap=S._aimSnap or {}
+            local key=tostring(p.UserId)
+            local look=r.CFrame.LookVector
+            local toMe=(hrp.Position-r.Position)
+            if toMe.Magnitude>5 and toMe.Magnitude<250 then
+                local dot=look:Dot(toMe.Unit)
+                if dot>0.97 then
+                    S._aimSnap[key]=(S._aimSnap[key] or 0)+1
+                    if S._aimSnap[key]>=4 then flags[#flags+1]="AimSnap"; S._aimSnap[key]=0 end
+                else
+                    S._aimSnap[key]=math.max(0,(S._aimSnap[key] or 0)-1)
+                end
+            end
+        end)
+        -- noclip heuristic: inside geometry / no collide on root
+        pcall(function()
+            if r.CanCollide==false and not h.Sit and not h.SeatPart then flags[#flags+1]="NoCollide" end
+        end)
+        if #flags>0 then
+            local key=tostring(p.UserId)
+            S._exploitSeen=S._exploitSeen or {}
+            local now=tick()
+            if not S._exploitSeen[key] or now-S._exploitSeen[key]>18 then
+                S._exploitSeen[key]=now
+                pcall(function()
+                    local sp=rawget(_G,"CH_showPopup")
+                    if sp then sp("⚠ Exploiter?",p.Name.." · "..table.concat(flags,", "),T.ng) end
+                end)
+            end
+        end
+    end
+end
+task.spawn(function()
+    while true do
+        task.wait(2.5)
+        pcall(scanExploiters)
+    end
+end)
+
+local function applyLagSwitch(en)
+    S.lagSwitchOn=en
+    pcall(function()
+        if en then
+            settings().Network.IncomingReplicationLag=10
+        else
+            settings().Network.IncomingReplicationLag=0
+        end
+    end)
+    pcall(function()
+        local nc=game:FindService("NetworkClient") or game:GetService("NetworkClient")
+        if nc and nc.SetOutgoingKBPSLimit then
+            nc:SetOutgoingKBPSLimit(en and 1 or 9e9)
+        end
+    end)
+end
+
+local function applyBhop(en)
+    S.bhopOn=en
+    if not en then
+        S.bhopMult=1
+        S.bhopHolding=false
+        if hum and hum.Parent and not S.spHkOn then
+            pcall(function() hum.WalkSpeed=S.bhopBaseSpeed or 16 end)
+        end
+    else
+        pcall(function() if hum then S.bhopBaseSpeed=hum.WalkSpeed end end)
+    end
+end
+
+-- Bhop input + accel (from bhop.lua)
+UIS.InputBegan:Connect(function(input,gp)
+    if gp then return end
+    if input.KeyCode==Enum.KeyCode.Space then
+        S.bhopHolding=true
+        if S.bhopOn then
+            pcall(function()
+                local ff=RepS:FindFirstChild("Freefall");if ff then ff:Destroy() end
+                local ae=RepS:FindFirstChild("ACS_Engine")
+                if ae then
+                    local evs=ae:FindFirstChild("Events")
+                    if evs then local fd=evs:FindFirstChild("FDMG");if fd then fd:Destroy() end end
+                end
+            end)
+        end
+    end
+end)
+UIS.InputEnded:Connect(function(input)
+    if input.KeyCode==Enum.KeyCode.Space then S.bhopHolding=false end
+end)
+RS.RenderStepped:Connect(function(dt)
+    if not S.bhopOn or not hum or not hum.Parent then return end
+    if S.spHkOn then return end
+    local state=hum:GetState()
+    local snappy=S.bhopSnappy or S.bhopMode=="Snappy"
+    local accel=snappy and 28 or 8
+    local maxM=snappy and 7 or 5
+    if S.bhopHolding and (state==Enum.HumanoidStateType.Running or state==Enum.HumanoidStateType.Landed or state==Enum.HumanoidStateType.Jumping) then
+        pcall(function() hum:ChangeState(Enum.HumanoidStateType.Jumping) end)
+    end
+    if snappy and hrp and hrp.Parent then
+        -- instant direction snap: velocity = move direction * speed (no inertia)
+        local md=hum.MoveDirection
+        local spd=(S.bhopSpeed or S.bhopBaseSpeed or 16)*(S.bhopMult or 1)
+        if md.Magnitude>0.05 then
+            local y=hrp.AssemblyLinearVelocity.Y
+            hrp.AssemblyLinearVelocity=Vector3.new(md.X*spd,y,md.Z*spd)
+        elseif not S.bhopHolding then
+            local v=hrp.AssemblyLinearVelocity
+            hrp.AssemblyLinearVelocity=Vector3.new(v.X*0.7,v.Y,v.Z*0.7)
+        end
+    end
+    if state==Enum.HumanoidStateType.Freefall and S.bhopHolding then
+        S.bhopMult=math.clamp((S.bhopMult or 1)+accel*dt,1,maxM)
+    elseif state==Enum.HumanoidStateType.Running or state==Enum.HumanoidStateType.Landed then
+        if not S.bhopHolding then S.bhopMult=1 end
+    end
+    local base=S.bhopSpeed or S.bhopBaseSpeed or 16
+    pcall(function()
+        hum.WalkSpeed=base*(S.bhopMult or 1)
+        if S.bhopJump and S.bhopJump>0 then
+            hum.JumpPower=S.bhopJump
+            pcall(function() hum.JumpHeight=S.bhopJump/5 end)
+        end
+    end)
+end)
+
 local function initSys()
     if rSys then return true end
     rSys=RepS:FindFirstChild("RocketSystem");if not rSys then return false end
@@ -1248,7 +1839,7 @@ local function newEB(p)
     local br={}
     for _=1,8 do br[_]=mkD("Line",c,1.8) end
     local sk={}
-    for _=1,14 do sk[_]=mkD("Line",c,1.2) end
+    for _=1,18 do sk[_]=mkD("Line",c,2.6,0) end
     local hd=mkD("Circle",c,1.5)
     if hd then pcall(function() hd.Filled=true;hd.NumSides=16;hd.Radius=3 end) end
     -- Avatar BillboardGui (profile pic above head)
@@ -1340,9 +1931,10 @@ local function drawBR(br,bx,by,brx,bby,col,vis)
         {Vector2.new(brx,bby),  Vector2.new(brx-cx,bby)},
         {Vector2.new(brx,bby),  Vector2.new(brx,bby-cy)},
     }
+    local tr=S.espVisAlpha or 0
     for i,l in ipairs(br) do
         if l and pts[i] then pcall(function()
-            l.From=pts[i][1];l.To=pts[i][2];l.Color=col;l.Visible=vis
+            l.From=pts[i][1];l.To=pts[i][2];l.Color=col;l.Transparency=tr;l.Visible=vis
         end) end
     end
 end
@@ -1358,16 +1950,19 @@ local function updateESP()
 
     if not S.espOn then
         for _,d in pairs(S.espBoxes) do hideEB(d) end
-        for _,d in pairs(S.vehESP) do hideVEB(d) end
-        return
+        if not S.vehEspOn then
+            for _,d in pairs(S.vehESP) do hideVEB(d) end
+            return
+        end
     end
 
     if now-pivTime>=.5 then pivCache=pivMap();pivTime=now end
 
+    if S.espOn then
     for _,d in pairs(S.espBoxes) do
         local p=d.player;if not p or not p.Parent then continue end
         if not isFocusTarget(p) then hideEB(d);continue end
-        if pivCache[p] then hideEB(d);continue end
+        -- keep ESP while seated (was: hide when pivCache[p])
         local ca=eCache(p);if not ca then hideEB(d);continue end
         local tH=ca.hrp;local th=ca.hum
         if th.Health<=0 or (tH.Position-cp):Dot(fw)<-8 then hideEB(d);continue end
@@ -1394,10 +1989,14 @@ local function updateESP()
         end) end
 
         if d.nt then pcall(function()
-            d.nt.Text=d.player.Name
+            if S.streamerMode then
+                d.nt.Text="Player"
+            else
+                d.nt.Text=d.player.DisplayName or d.player.Name
+            end
             d.nt.Color=Color3.fromRGB(255,255,255)
             local nY=S.espFaction and (by-15) or (by-15)
-            d.nt.Position=Vector2.new(vec.X,nY);d.nt.Visible=S.espNames
+            d.nt.Position=Vector2.new(vec.X,nY);d.nt.Visible=S.espNames and not S.streamerMode
         end) end
 
         if d.dt then pcall(function()
@@ -1454,24 +2053,35 @@ local function updateESP()
             end
         end) end
 
-        -- Skeleton ESP
+        -- Skeleton ESP (recursive part lookup; works seated / R6 / R15)
         if d.sk then
             if S.espSkeleton and ca.char then
+                local function findPart(name)
+                    local p2=ca.char:FindFirstChild(name)
+                    if p2 and p2:IsA("BasePart") then return p2 end
+                    for _,d2 in ipairs(ca.char:GetDescendants()) do
+                        if d2.Name==name and d2:IsA("BasePart") then return d2 end
+                    end
+                    return nil
+                end
                 local pairs=SKELETON_PAIRS
-                if not ca.char:FindFirstChild("UpperTorso") then pairs=SKELETON_R6 end
+                if not findPart("UpperTorso") then pairs=SKELETON_R6 end
+                local skCol=S.espSkeletonCol or ec
                 for i,pair in ipairs(pairs) do
                     local line=d.sk[i]
                     if line then
-                        local a=ca.char:FindFirstChild(pair[1])
-                        local b=ca.char:FindFirstChild(pair[2])
-                        if a and b and a:IsA("BasePart") and b:IsA("BasePart") then
+                        local a=findPart(pair[1])
+                        local b=findPart(pair[2])
+                        if a and b then
                             local pa,ona=lc:WorldToViewportPoint(a.Position)
                             local pb,onb=lc:WorldToViewportPoint(b.Position)
-                            if ona and onb then
+                            if ona and onb and pa.Z>0 and pb.Z>0 then
                                 pcall(function()
                                     line.From=Vector2.new(pa.X,pa.Y)
                                     line.To=Vector2.new(pb.X,pb.Y)
-                                    line.Color=ec
+                                    line.Color=skCol
+                                    line.Thickness=2.8
+                                    line.Transparency=S.espVisAlpha or 0
                                     line.Visible=true
                                 end)
                             else setVis(line,false) end
@@ -1485,7 +2095,19 @@ local function updateESP()
         end
     end
 
+    end -- end if S.espOn player boxes
+
     local active={}
+    if not S.vehEspOn then
+        for v,d in pairs(S.vehESP) do
+            hideVEB(d)
+            pcall(function()
+                for _,l in ipairs(d.br or {}) do if l then l:Remove() end end
+                if d.nt then d.nt:Remove() end;if d.dt then d.dt:Remove() end;if d.tr then d.tr:Remove() end
+            end);S.vehESP[v]=nil
+        end
+        return
+    end
     local gs=workspace:FindFirstChild("Game Systems")
     if gs then
         for _,wn in ipairs(VWS) do
@@ -2073,10 +2695,31 @@ end
 plr.CharacterAdded:Connect(function(nc)
     char=nc;hrp=nc:WaitForChild("HumanoidRootPart");hum=nc:WaitForChild("Humanoid")
     cam=workspace.CurrentCamera;S.cachedWep=nil
+    -- Soft refresh: restore tools + position without full loadout loss
+    if S._refreshRestore then
+        local r=S._refreshRestore;S._refreshRestore=nil
+        task.spawn(function()
+            local tries=0
+            while tries<20 do
+                tries=tries+1
+                if hrp and hrp.Parent then
+                    pcall(function() hrp.CFrame=r.cf end)
+                    pcall(function() if hum then hum.Health=hum.MaxHealth end end)
+                    for _,t in ipairs(r.tools or {}) do
+                        pcall(function()
+                            if t and t.Parent==nil then t.Parent=plr.Backpack end
+                        end)
+                    end
+                    break
+                end
+                task.wait(0.05)
+            end
+        end)
+    end
     -- force baseline walkspeed 16 immediately, then re-apply hacks after game scripts
-    pcall(function() if hum then hum.WalkSpeed=16 end end)
+    pcall(function() if hum then hum.WalkSpeed=16;S.bhopBaseSpeed=16 end end)
     task.delay(0.15,function()
-        pcall(function() if hum and hum.Parent and not S.spHkOn then hum.WalkSpeed=16 end end)
+        pcall(function() if hum and hum.Parent and not S.spHkOn and not S.bhopOn then hum.WalkSpeed=16 end end)
     end)
     task.wait(.5)
     S.myBase=nil;task.spawn(function() while not S.myBase and not S.dead do findBase();task.wait(2) end end)
@@ -2084,11 +2727,19 @@ plr.CharacterAdded:Connect(function(nc)
     if S.spinOn then task.delay(.5,function() applySpin(true) end) end
     applySpd();applyJmp();applyInfJ(S.infJOn);applyNC(S.ncOn);applyGrav(S.gravOn);applyChams(S.chamsOn)
     applyBright(S.brightOn);applyFog(S.fogOn);applyXR(S.xrayOn)
+    -- bind death logger for local player
+    pcall(function()
+        if hum then
+            hum.Died:Connect(function()
+                logDeath()
+            end)
+        end
+    end)
     -- one more pass in case the game overwrote after load
     task.delay(1,function()
         if S.dead then return end
         applySpd();applyJmp()
-        if not S.spHkOn and hum and hum.Parent then pcall(function() hum.WalkSpeed=16 end) end
+        if not S.spHkOn and not S.bhopOn and hum and hum.Parent then pcall(function() hum.WalkSpeed=16 end) end
     end)
 end)
 
@@ -2109,12 +2760,35 @@ end)
 
 local sg=Instance.new("ScreenGui");sg.Name="ChudHubUI";sg.ResetOnSpawn=false
 sg.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
--- Streamproof: hide from OBS / Discord overlays when executor supports it
-pcall(function()
-    if syn and syn.protect_gui then syn.protect_gui(sg)
-    elseif protect_gui then protect_gui(sg)
-    elseif gethui then sg.Parent=gethui(); return end
-end)
+sg.DisplayOrder=999
+sg.IgnoreGuiInset=true
+local function applyStreamproof(en)
+    S.streamproof=en
+    pcall(function()
+        if en then
+            -- Prefer executor-protected containers (hidden from CaptureService / OBS game capture)
+            if gethui then
+                sg.Parent=gethui()
+            elseif syn and syn.protect_gui then
+                syn.protect_gui(sg)
+                if not sg.Parent then sg.Parent=plr:WaitForChild("PlayerGui") end
+            elseif protect_gui then
+                protect_gui(sg)
+                if not sg.Parent then sg.Parent=plr:WaitForChild("PlayerGui") end
+            elseif get_hidden_gui then
+                sg.Parent=get_hidden_gui()
+            else
+                -- Fallback: CoreGui (still visible to some captures but outside PlayerGui)
+                pcall(function() sg.Parent=game:GetService("CoreGui") end)
+                if not sg.Parent then sg.Parent=plr:WaitForChild("PlayerGui") end
+            end
+            pcall(function() sg.DisplayOrder=999999 end)
+        else
+            sg.Parent=plr:WaitForChild("PlayerGui")
+        end
+    end)
+end
+applyStreamproof(S.streamproof~=false)
 if not sg.Parent then sg.Parent=plr:WaitForChild("PlayerGui") end
 
 local SW_COLLAPSED=58
@@ -3947,7 +4621,12 @@ end
 -- ===== Custom bottom-right popup notifications =====
 local toggleNotifQueue = {}
 local function showPopup(title, subtitle, accent)
+    rawset(_G,"CH_showPopup",showPopup)
     if not S.customNotifications then return end
+    if S._suppressNotifs then
+        local t=tostring(title or ""):lower()
+        if not t:find("chudhub loaded",1,true) then return end
+    end
     accent = accent or T.ac
     local baseY = 12 + #toggleNotifQueue * 56
     local notif = new("Frame",sg,{
@@ -4012,7 +4691,8 @@ end)
 -- Load banner (bottom-right popup instead of chat)
 task.spawn(function()
     task.wait(1.4)
-    showPopup("ChudHub Loaded","v1  ·  by Proxy Phalanxs",T.ac)
+    showPopup("ChudHub Loaded",CH_VERSION.."  ·  by Proxy Phalanxs",T.ac)
+    task.delay(0.6,function() S._suppressNotifs=false end)
 end)
 
 local function mkSL(par,y,txt)
@@ -4538,6 +5218,20 @@ local function findClosestRPGGiver()
     return best, bestName, bestDist, bestPos
 end
 
+local function hasRPGInBackpack()
+    local function scan(parent)
+        if not parent then return false end
+        for _,t in ipairs(parent:GetChildren()) do
+            if t:IsA("Tool") then
+                local l=t.Name:lower()
+                if l:find("rpg") or l:find("rocket") then return true end
+            end
+        end
+        return false
+    end
+    return scan(plr:FindFirstChild("Backpack")) or scan(plr.Character)
+end
+
 local function fireRPGGiverPrompt()
     local myRoot = hrp
     if not myRoot or not myRoot.Parent then
@@ -4556,49 +5250,63 @@ local function fireRPGGiverPrompt()
     local originCF = myRoot.CFrame
     local ok = false
     pcall(function()
-        -- teleport to giver
         myRoot.CFrame = CFrame.new(giverPos + Vector3.new(0, 3, 0))
-        task.wait(0.12)
-        if target:IsA("ProximityPrompt") then
-            if fireproximityprompt then
-                fireproximityprompt(target)
-                ok = true
-            else
-                pcall(function()
-                    target:InputHoldBegin()
-                    task.wait(0.08)
-                    target:InputHoldEnd()
-                end)
-                ok = true
-            end
-        else
-            local pp = target:FindFirstChildWhichIsA("ProximityPrompt", true)
-            if pp and fireproximityprompt then
-                fireproximityprompt(pp)
-                ok = true
-            elseif pp then
-                pcall(function()
-                    pp:InputHoldBegin()
-                    task.wait(0.08)
-                    pp:InputHoldEnd()
-                end)
-                ok = true
-            end
-        end
         task.wait(0.15)
-        -- teleport back
-        if myRoot and myRoot.Parent then
-            myRoot.CFrame = originCF
+        local function firePrompt(pp)
+            if not pp then return end
+            if fireproximityprompt then fireproximityprompt(pp)
+            else pcall(function() pp:InputHoldBegin();task.wait(0.1);pp:InputHoldEnd() end) end
         end
+        if target:IsA("ProximityPrompt") then firePrompt(target); ok=true
+        else firePrompt(target:FindFirstChildWhichIsA("ProximityPrompt", true)); ok=true end
+        -- stay until RPG appears in backpack (or timeout)
+        local got=false
+        for _=1,25 do
+            if hasRPGInBackpack and hasRPGInBackpack() then got=true; break end
+            -- re-fire prompt a few times
+            if target:IsA("ProximityPrompt") then firePrompt(target)
+            else firePrompt(target:FindFirstChildWhichIsA("ProximityPrompt", true)) end
+            task.wait(0.2)
+        end
+        -- only return home after check
+        if myRoot and myRoot.Parent then myRoot.CFrame = originCF end
+        ok = got or ok
     end)
-    if ok then
-        showPopup("RPG Grabber", string.format("%s (%.0fst)", name or "Giver", dist or 0), T.ok)
+    if hasRPGInBackpack and hasRPGInBackpack() then
+        showPopup("RPG Grabber", "RPG secured · "..(name or "Giver"), T.ok)
+    elseif ok then
+        showPopup("RPG Grabber", string.format("%s (%.0fst) — check backpack", name or "Giver", dist or 0), T.wn)
     else
-        -- still try return home
         pcall(function() if myRoot and myRoot.Parent then myRoot.CFrame = originCF end end)
         showPopup("RPG Grabber", "Failed to grab", T.ng)
     end
     return ok
+end
+
+
+local function grabRPGUntilFound(maxTries)
+    maxTries=maxTries or 40
+    if S._rpgGrabLoop then showPopup("RPG Grabber","Already running",T.wn);return end
+    S._rpgGrabLoop=true
+    task.spawn(function()
+        showPopup("RPG Grabber","Grabbing until found…",T.ac)
+        for i=1,maxTries do
+            if S.dead or not S._rpgGrabLoop then break end
+            if hasRPGInBackpack() then
+                showPopup("RPG Grabber","RPG in backpack!",T.ok)
+                S._rpgGrabLoop=false
+                return
+            end
+            fireRPGGiverPrompt()
+            task.wait(0.55)
+        end
+        S._rpgGrabLoop=false
+        if hasRPGInBackpack() then
+            showPopup("RPG Grabber","RPG secured",T.ok)
+        else
+            showPopup("RPG Grabber","Gave up — no RPG",T.ng)
+        end
+    end)
 end
 
 
@@ -4825,6 +5533,31 @@ local function buildMove()
     mkSL(s,Y,"Spin Bot");Y=Y+SEC_H+GAP
     mkSl(s,Y,{label="Speed",min=60,max=72000,default=360,suffix="°/s",cb=function(v) S.spinSpd=v;if S.spinBAV and S.spinBAV.Parent then S.spinBAV.AngularVelocity=Vector3.new(0,mrad(v),0) end;CHQueueSave() end});Y=Y+SL_H+GAP
     spinTog=mkTog(s,Y,{label="Spin",bindKey="spin",default=false,color=T.ac,cb=function(en) S.spinOn=en;applySpin(en) end});Y=Y+TOG_H+GAP
+    mkTog(s,Y,{label="Spin Client Lock (move freely)",default=false,color=T.ac,cb=function(en)
+        S.spinClientLock=en
+        showPopup("Spin Client Lock",en and "Local view unlocked" or "Full spin",T.ac)
+    end});Y=Y+TOG_H+GAP
+    mkSL(s,Y,"Bhop");Y=Y+SEC_H+GAP
+    mkTog(s,Y,{label="Bhop (hold Space)",default=false,color=T.ac,cb=function(en)
+        applyBhop(en)
+        pcall(function()
+            local ff=RepS:FindFirstChild("Freefall");if ff then ff:Destroy() end
+            local ae=RepS:FindFirstChild("ACS_Engine")
+            if ae then
+                local evs=ae:FindFirstChild("Events")
+                if evs then local fd=evs:FindFirstChild("FDMG");if fd then fd:Destroy() end end
+            end
+        end)
+        showPopup("Bhop",en and "ON" or "OFF",T.ac)
+    end});Y=Y+TOG_H+GAP
+    mkTog(s,Y,{label="Snappy Mode",default=false,color=T.ac,cb=function(en)
+        S.bhopSnappy=en;S.bhopMode=en and "Snappy" or "Classic"
+        showPopup("Bhop",en and "Snappy" or "Classic",T.ac)
+    end});Y=Y+TOG_H+GAP
+    mkSl(s,Y,{label="Bhop Speed",min=16,max=200,default=16,suffix=" st/s",cb=function(v)
+        S.bhopSpeed=v;S.bhopBaseSpeed=v
+    end});Y=Y+SL_H+GAP
+    mkSl(s,Y,{label="Bhop Jump",min=50,max=300,default=50,cb=function(v) S.bhopJump=v end});Y=Y+SL_H+GAP
     s.CanvasSize=UDim2.new(0,0,0,Y+10)
 end
 
@@ -4901,20 +5634,23 @@ local function buildWeapon()
 
     -- Input + Set rows
     mkSL(s, Y, "Weapon Properties"); Y = Y + SEC_H + GAP
-    local _,frBox=mkInputSet(s,Y,"Fire Rate","8888",function(txt)
-        local rate=tonumber(txt) or 8888
+    local _,frBox=mkInputSet(s,Y,"Fire Rate","",function(txt)
+        local rate=tonumber(txt)
+        if not rate then showPopup("Fire Rate","Enter a number",T.wn);return end
         modifyWeaponSettings("FireRate",rate)
         modifyWeaponSettings("ShootRate",rate)
         showPopup("Fire Rate",tostring(rate),T.ok)
     end);Y=Y+38+GAP
-    local _,bsBox=mkInputSet(s,Y,"Bullet Speed","10000",function(txt)
-        local spd=tonumber(txt) or 10000
+    local _,bsBox=mkInputSet(s,Y,"Bullet Speed","",function(txt)
+        local spd=tonumber(txt)
+        if not spd then showPopup("Bullet Speed","Enter a number",T.wn);return end
         modifyWeaponSettings("BSpeed",spd)
         modifyWeaponSettings("MuzzleVelocity",spd)
         showPopup("Bullet Speed",tostring(spd),T.ok)
     end);Y=Y+38+GAP
-    local _,mbBox=mkInputSet(s,Y,"Multi Bullets","50",function(txt)
-        local cnt=tonumber(txt) or 50
+    local _,mbBox=mkInputSet(s,Y,"Multi Bullets","",function(txt)
+        local cnt=tonumber(txt)
+        if not cnt then showPopup("Multi Bullets","Enter a number",T.wn);return end
         modifyWeaponSettings("Bullets",cnt)
         showPopup("Multi Bullets",tostring(cnt),T.ok)
     end);Y=Y+38+GAP
@@ -4927,21 +5663,237 @@ local function buildVehicle()
     local s = tabC["Vehicle"].scroll
     local Y = 8
 
-        -- Tank Spam (War Tycoon)
-    mkSL(s, Y, "Tank Spam (War Tycoon)"); Y = Y + SEC_H + GAP
-    mkTog(s, Y, {label="Enable Tank Spam", default=false, color=T.ac, cb=function(v) S.tankSpamEnabled = v end}); Y = Y + TOG_H + GAP
-    mkTog(s, Y, {label="Tank Spam Key (Q)", default=false, color=T.ac, cb=function(v) if v then startTankSpam() end end}); Y = Y + TOG_H + GAP
-    mkSl(s, Y, {label="Shells per Spam", min=1, max=500, default=1, cb=function(v) S.shellsToFire = math.floor(v) end}); Y = Y + SL_H + GAP
-    mkSl(s, Y, {label="Spam Speed", min=0.1, max=10, default=1, rounding=1, cb=function(v) S.spamSpeed = v end}); Y = Y + SL_H + GAP
+    -- Vehicle Upgrades (attributes on any model under Workspace)
+    mkSL(s, Y, "Vehicle Upgrades"); Y = Y + SEC_H + GAP
 
-    -- Vehicle / Tank Property
-    mkSL(s, Y, "Vehicle / Tank Property Modifier"); Y = Y + SEC_H + GAP
-    mkDropdown(s, Y, "Vehicle Property", {"FireRate","OverHeatCount","DataTime","DepleteDelay","OverheatIncrement","BulletSpeed"}, S.vehiclePropertySelected, function(v) S.vehiclePropertySelected=v end); Y=Y+56+GAP
-    local _,valBox=mkInputSet(s,Y,"Property Value","8888",function(txt)
-        S.vehiclePropertyValue=tonumber(txt) or 8888
-        modifyAllVehicleSettings()
-        showPopup("Vehicle",S.vehiclePropertySelected.." = "..tostring(S.vehiclePropertyValue),T.ok)
-    end);Y=Y+38+GAP
+    local function collectVehicles()
+        local list = {}
+        local function scan(folder)
+            if not folder then return end
+            for _, ch in ipairs(folder:GetChildren()) do
+                if ch:IsA("Model") then
+                    -- models that have any of the upgrade attributes (or look like vehicles)
+                    local has =
+                        ch:GetAttribute("SpeedUpgrades") ~= nil
+                        or ch:GetAttribute("FirepowerUpgrades") ~= nil
+                        or ch:GetAttribute("HealthUpgrades") ~= nil
+                        or ch:FindFirstChild("VehicleSeat")
+                        or ch:FindFirstChildWhichIsA("VehicleSeat", true)
+                        or ch:FindFirstChild("DriveSeat")
+                        or ch:FindFirstChild("Owner")
+                    if has then
+                        list[#list+1] = ch
+                    end
+                elseif ch:IsA("Folder") or ch:IsA("Model") then
+                    -- recurse into folders under workspace (e.g. Game Systems / Vehicle Workspace)
+                    if ch.Name:lower():find("vehicle") or ch.Name:lower():find("workspace")
+                        or ch.Name == "Game Systems" or ch.Name:lower():find("tank")
+                        or ch.Name:lower():find("plane") or ch.Name:lower():find("heli") then
+                        scan(ch)
+                    end
+                end
+            end
+        end
+        -- scan whole workspace folders
+        for _, root in ipairs(workspace:GetChildren()) do
+            if root:IsA("Folder") or root:IsA("Model") then
+                scan(root)
+            elseif root:IsA("Model") then
+                local has =
+                    root:GetAttribute("SpeedUpgrades") ~= nil
+                    or root:GetAttribute("FirepowerUpgrades") ~= nil
+                    or root:GetAttribute("HealthUpgrades") ~= nil
+                if has then list[#list+1] = root end
+            end
+        end
+        -- also direct Vehicle Workspace path if present
+        pcall(function()
+            local vs = workspace:FindFirstChild("Game Systems")
+            vs = vs and vs:FindFirstChild("Vehicle Workspace")
+            if vs then
+                for _, ch in ipairs(vs:GetChildren()) do
+                    if ch:IsA("Model") then
+                        local found = false
+                        for _, e in ipairs(list) do if e == ch then found = true break end end
+                        if not found then list[#list+1] = ch end
+                    end
+                end
+            end
+        end)
+        return list
+    end
+
+    local function getVehTarget()
+        if S.nearestVehicle and S.nearestVehicle.Parent then
+            return S.nearestVehicle
+        end
+        return getNearestVehicle()
+    end
+
+    local function setVehAttr(name, val)
+        local veh = getVehTarget()
+        if not veh then
+            showPopup("Vehicle", "No vehicle nearby", T.wn)
+            return false
+        end
+        pcall(function() veh:SetAttribute(name, val) end)
+        return true, veh
+    end
+
+    S.vehUpgradeLoop = S.vehUpgradeLoop or false
+    S.vehSpeedUp = S.vehSpeedUp or 0
+    S.vehFireUp = S.vehFireUp or 0
+    S.vehHealthUp = S.vehHealthUp or 0
+
+    local function mkUpgradeRow(label, attrName, stateKey)
+        local _, box = mkInputSet(s, Y, label, "", function(txt)
+            local n = tonumber(txt)
+            if not n then showPopup("Vehicle", "Enter a number", T.wn); return end
+            n = math.floor(n)
+            S[stateKey] = n
+            local ok, veh = setVehAttr(attrName, n)
+            if ok then
+                showPopup("Vehicle", label.." = "..tostring(n).." on "..veh.Name, T.ok)
+            end
+        end)
+        Y = Y + 38 + GAP
+        return box
+    end
+
+    mkUpgradeRow("Speed", "SpeedUpgrades", "vehSpeedUp")
+    mkUpgradeRow("Firepower", "FirepowerUpgrades", "vehFireUp")
+    mkUpgradeRow("Health", "HealthUpgrades", "vehHealthUp")
+
+    mkTog(s, Y, {label="Loop Force Upgrades", default=false, color=T.ac, cb=function(en)
+        S.vehUpgradeLoop = en
+        if en then
+            task.spawn(function()
+                while S.vehUpgradeLoop and not S.dead do
+                    pcall(function()
+                        for _, veh in ipairs(collectVehicles()) do
+                            pcall(function()
+                                veh:SetAttribute("SpeedUpgrades", S.vehSpeedUp or 0)
+                                veh:SetAttribute("FirepowerUpgrades", S.vehFireUp or 0)
+                                veh:SetAttribute("HealthUpgrades", S.vehHealthUp or 0)
+                            end)
+                        end
+                    end)
+                    task.wait(0.15)
+                end
+            end)
+            showPopup("Vehicle", "Upgrade loop ON", T.ok)
+        else
+            showPopup("Vehicle", "Upgrade loop OFF", T.txM)
+        end
+    end}); Y = Y + TOG_H + GAP
+
+    mkBtn(s, Y, "Max All (Nearest)", function()
+        S.vehSpeedUp, S.vehFireUp, S.vehHealthUp = 50, 50, 50
+        local veh = getVehTarget()
+        if not veh then showPopup("Vehicle", "No vehicle nearby", T.wn); return end
+        pcall(function()
+            veh:SetAttribute("SpeedUpgrades", 50)
+            veh:SetAttribute("FirepowerUpgrades", 50)
+            veh:SetAttribute("HealthUpgrades", 50)
+        end)
+        showPopup("Vehicle", "Maxed "..veh.Name, T.ok)
+    end); Y = Y + TOG_H + GAP
+
+    mkBtn(s, Y, "Apply to All Vehicles", function()
+        local list = collectVehicles()
+        local n = 0
+        for _, veh in ipairs(list) do
+            pcall(function()
+                veh:SetAttribute("SpeedUpgrades", S.vehSpeedUp or 0)
+                veh:SetAttribute("FirepowerUpgrades", S.vehFireUp or 0)
+                veh:SetAttribute("HealthUpgrades", S.vehHealthUp or 0)
+            end)
+            n = n + 1
+        end
+        showPopup("Vehicle", "Applied to "..n.." vehicles", T.ok)
+    end); Y = Y + TOG_H + GAP
+
+    mkSL(s, Y, "Turret"); Y = Y + SEC_H + GAP
+    mkTog(s, Y, {label="Inf Ammo", default=false, color=T.ok, cb=function(en)
+        S.bulletCountZero = en
+        if en then
+            task.spawn(function()
+                while S.bulletCountZero and not S.dead do
+                    pcall(function()
+                        local gs = workspace:FindFirstChild("Game Systems")
+                        if not gs then return end
+                        for _, obj in ipairs(gs:GetDescendants()) do
+                            if obj:GetAttribute("BulletCount") ~= nil then
+                                obj:SetAttribute("BulletCount", 0)
+                            end
+                        end
+                    end)
+                    task.wait()
+                end
+            end)
+            showPopup("Vehicle", "Inf ammo ON", T.ok)
+        else
+            showPopup("Vehicle", "Inf ammo OFF", T.txM)
+        end
+    end}); Y = Y + TOG_H + GAP
+
+    -- FireRate for any Settings module under Game Systems
+    local _, frBox = mkInputSet(s, Y, "FireRate", "", function(txt)
+        local n = tonumber(txt)
+        if not n then showPopup("Vehicle", "Enter a number", T.wn); return end
+        S.vehFireRate = n
+        local count = 0
+        pcall(function()
+            local gs = workspace:FindFirstChild("Game Systems")
+            if not gs then return end
+            for _, d in ipairs(gs:GetDescendants()) do
+                if d:IsA("ModuleScript") and d.Name == "Settings" then
+                    local ok, cfg = pcall(require, d)
+                    if ok and type(cfg) == "table" then
+                        cfg.FireRate = n
+                        cfg.CooldownTime = 0
+                        cfg.OverheatIncrement = 0
+                        cfg.OverheatCount = 99999
+                        cfg.DepleteDelay = 0
+                        count = count + 1
+                    end
+                end
+            end
+        end)
+        showPopup("Vehicle", "FireRate="..tostring(n).." on "..count.." modules", T.ok)
+    end); Y = Y + 38 + GAP
+
+    mkTog(s, Y, {label="Loop FireRate", default=false, color=T.ac, cb=function(en)
+        S.vehFireRateLoop = en
+        if en then
+            task.spawn(function()
+                while S.vehFireRateLoop and not S.dead do
+                    pcall(function()
+                        local rate = S.vehFireRate
+                        if not rate then return end
+                        local gs = workspace:FindFirstChild("Game Systems")
+                        if not gs then return end
+                        for _, d in ipairs(gs:GetDescendants()) do
+                            if d:IsA("ModuleScript") and d.Name == "Settings" then
+                                local ok, cfg = pcall(require, d)
+                                if ok and type(cfg) == "table" then
+                                    cfg.FireRate = rate
+                                    cfg.CooldownTime = 0
+                                    cfg.OverheatIncrement = 0
+                                    cfg.OverheatCount = 99999
+                                    cfg.DepleteDelay = 0
+                                end
+                            end
+                        end
+                    end)
+                    task.wait(0.5)
+                end
+            end)
+            showPopup("Vehicle", "FireRate loop ON", T.ok)
+        else
+            showPopup("Vehicle", "FireRate loop OFF", T.txM)
+        end
+    end}); Y = Y + TOG_H + GAP
 
     mkSL(s, Y, "Vehicle Detection"); Y = Y + SEC_H + GAP
 
@@ -4963,7 +5915,11 @@ local function buildVehicle()
             if not vehLabel or not vehLabel.Parent then break end
             local ok, veh = pcall(getNearestVehicle)
             if ok and veh then
-                vehLabel.Text = "Nearest: " .. veh.Name
+                local su = veh:GetAttribute("SpeedUpgrades")
+                local fu = veh:GetAttribute("FirepowerUpgrades")
+                local hu = veh:GetAttribute("HealthUpgrades")
+                vehLabel.Text = string.format("Nearest: %s  |  S:%s F:%s H:%s",
+                    veh.Name, tostring(su or "-"), tostring(fu or "-"), tostring(hu or "-"))
             else
                 vehLabel.Text = "Nearest Vehicle: None"
             end
@@ -4972,7 +5928,10 @@ local function buildVehicle()
 
     mkBtn(s, Y, "Refresh Nearest Vehicle", function()
         local veh = getNearestVehicle()
-        if veh then vehLabel.Text = "Nearest: " .. veh.Name .. " (refreshed)" end
+        if veh then
+            vehLabel.Text = "Nearest: " .. veh.Name .. " (refreshed)"
+            S.nearestVehicle = veh
+        end
     end); Y = Y + TOG_H + GAP
 
     mkBtn(s, Y, "Debug: Print All Attributes", function()
@@ -4985,122 +5944,127 @@ local function buildVehicle()
         print("=======================================")
     end); Y = Y + TOG_H + GAP
 
-    -- ==================== GENERAL VEHICLE ====================
-    mkSL(s, Y, "General Vehicle (Cars / Buggies / Trucks)"); Y = Y + SEC_H + GAP
-
-    mkSl(s, Y, {label="Throttle", min=100000, max=10000000, default=1000000, cb=function(v)
-        print("[Tuning] Throttle =", v)
-        local veh = getNearestVehicle()
-        if veh then pcall(function() veh:SetAttribute("Throttle", v) end) end
-    end}); Y = Y + SL_H + GAP
-
-    mkSl(s, Y, {label="Max Speed", min=10, max=500, default=300, cb=function(v)
-        print("[Tuning] MaxSpeed =", v)
-        local veh = getNearestVehicle()
-        if veh then pcall(function() veh:SetAttribute("MaxSpeed", v) end) end
-    end}); Y = Y + SL_H + GAP
-
-    mkSl(s, Y, {label="Turn Speed", min=1, max=50, default=20, cb=function(v)
-        print("[Tuning] TurnSpeed =", v)
-        local veh = getNearestVehicle()
-        if veh then pcall(function() veh:SetAttribute("TurnSpeed", v) end) end
-    end}); Y = Y + SL_H + GAP
-
-    mkSl(s, Y, {label="Brake Power", min=0.1, max=10, default=0.5, cb=function(v)
-        print("[Tuning] BrakePower =", v)
-        local veh = getNearestVehicle()
-        if veh then pcall(function() veh:SetAttribute("BrakePower", v) end) end
-    end}); Y = Y + SL_H + GAP
-
-    mkSl(s, Y, {label="Speed Upgrades", min=0, max=10, default=0, cb=function(v)
-        print("[Tuning] SpeedUpgrades =", v)
-        local veh = getNearestVehicle()
-        if veh then pcall(function() veh:SetAttribute("SpeedUpgrades", v) end) end
-    end}); Y = Y + SL_H + GAP
-
-    mkBtn(s, Y, "Max Out Speed Upgrades", function()
-        local veh = getNearestVehicle()
-        if veh then
-            pcall(function() veh:SetAttribute("SpeedUpgrades", 10) end)
-            pcall(function() veh:SetAttribute("Throttle", 5000000) end)
-            pcall(function() veh:SetAttribute("MaxSpeed", 500) end)
-            print("[Tuning] Maxed out speed upgrades")
-        end
-    end); Y = Y + TOG_H + GAP
-
-    -- ==================== TANK ====================
-    mkSL(s, Y, "Tank Tuning"); Y = Y + SEC_H + GAP
-
-    mkSl(s, Y, {label="Tank Throttle", min=100000, max=20000000, default=4000000, cb=function(v)
-        print("[Tuning] Tank Throttle =", v)
-        local veh = getNearestVehicle()
-        if veh then pcall(function() veh:SetAttribute("Throttle", v) end) end
-    end}); Y = Y + SL_H + GAP
-
-    mkSl(s, Y, {label="Tank Turn Speed", min=1, max=30, default=9, cb=function(v)
-        print("[Tuning] Tank TurnSpeed =", v)
-        local veh = getNearestVehicle()
-        if veh then pcall(function() veh:SetAttribute("TurnSpeed", v) end) end
-    end}); Y = Y + SL_H + GAP
-
-    mkSl(s, Y, {label="Tank Brake Power", min=1, max=100, default=20, cb=function(v)
-        print("[Tuning] Tank BrakePower =", v)
-        local veh = getNearestVehicle()
-        if veh then pcall(function() veh:SetAttribute("BrakePower", v) end) end
-    end}); Y = Y + SL_H + GAP
-
-    -- ==================== HELICOPTER ====================
-    mkSL(s, Y, "Helicopter Tuning"); Y = Y + SEC_H + GAP
-
-    mkSl(s, Y, {label="Max Flight Force", min=50, max=3000, default=200, cb=function(v)
-        print("[Tuning] MaxFlightForce =", v)
-        local veh = getNearestVehicle()
-        if veh then pcall(function() veh:SetAttribute("MaxFlightForce", v) end) end
-    end}); Y = Y + SL_H + GAP
-
-    mkSl(s, Y, {label="Rotor Max Speed", min=50, max=2000, default=320, cb=function(v)
-        print("[Tuning] RotorMaxSpeed =", v)
-        local veh = getNearestVehicle()
-        if veh then pcall(function() veh:SetAttribute("RotorMaxSpeed", v) end) end
-    end}); Y = Y + SL_H + GAP
-
-    mkSl(s, Y, {label="Orient Speed", min=10, max=500, default=90, cb=function(v)
-        print("[Tuning] OrientSpeed =", v)
-        local veh = getNearestVehicle()
-        if veh then pcall(function() veh:SetAttribute("OrientSpeed", v) end) end
-    end}); Y = Y + SL_H + GAP
-
-    -- ==================== PLANE ====================
-    mkSL(s, Y, "Plane Tuning"); Y = Y + SEC_H + GAP
-
-    mkSl(s, Y, {label="Plane Max Speed", min=50, max=1500, default=300, cb=function(v)
-        print("[Tuning] Plane MaxSpeed =", v)
-        local veh = getNearestVehicle()
-        if veh then pcall(function() veh:SetAttribute("MaxSpeed", v) end) end
-    end}); Y = Y + SL_H + GAP
-
-    mkSl(s, Y, {label="Throttle Acceleration", min=10, max=1000, default=50, cb=function(v)
-        print("[Tuning] ThrottleAcceleration =", v)
-        local veh = getNearestVehicle()
-        if veh then pcall(function() veh:SetAttribute("ThrottleAcceleration", v) end) end
-    end}); Y = Y + SL_H + GAP
-
-    mkSL(s, Y, "Hitbox"); Y = Y + SEC_H + GAP
-    mkTog(s,Y,{label="Expand Vehicle Hitbox",default=false,color=T.ac,cb=function(en) S.vehicleHitboxOn=en end});Y=Y+TOG_H+GAP
-    mkSl(s,Y,{label="Vehicle Hitbox Size",min=10,max=200,default=50,suffix=" st",cb=function(v) S.vehicleHitboxSize=v end});Y=Y+SL_H+GAP
-
     mkSL(s, Y, "Stealer"); Y = Y + SEC_H + GAP
     mkBtn(s,Y,"Vehicle Stealer (Nearest)",function()
+        if S._vehicleStealBusy then showPopup("Stealer","Already running",T.wn);return end
         local veh = S.nearestVehicle or getNearestVehicle()
-        if veh then
-            local owner = veh:FindFirstChild("Owner")
-            if owner and owner.Value and owner.Value~="" then
-                pcall(function() print("Stealing vehicle from "..owner.Value) end)
-            end
-            if plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
-                plr.Character.HumanoidRootPart.CFrame = veh:GetPivot() + Vector3.new(0,5,0)
+        if not veh then showPopup("Stealer","No vehicle nearby",T.wn);return end
+        local ownerName=nil
+        pcall(function()
+            local o=veh:FindFirstChild("Owner")
+            if o and o.Value and o.Value~="" then ownerName=tostring(o.Value) end
+        end)
+        local ownerPlr=nil
+        if ownerName then
+            for _,p in ipairs(Players:GetPlayers()) do
+                if p.Name==ownerName or p.DisplayName==ownerName then ownerPlr=p;break end
             end
         end
+        if not ownerPlr then
+            for _,p in ipairs(Players:GetPlayers()) do
+                if p~=plr and p.Character then
+                    local h=p.Character:FindFirstChildOfClass("Humanoid")
+                    if h and h.SeatPart and h.SeatPart:IsDescendantOf(veh) then ownerPlr=p;break end
+                end
+            end
+        end
+        S._vehicleStealBusy=true
+        task.spawn(function()
+            local myRoot=hrp or (plr.Character and plr.Character:FindFirstChild("HumanoidRootPart"))
+            if not myRoot then S._vehicleStealBusy=false;return end
+            showPopup("Stealer","Engaging…",T.ac)
+            -- eject driver from seat first so bring only moves the player
+            if ownerPlr and ownerPlr.Character then
+                local oh=ownerPlr.Character:FindFirstChildOfClass("Humanoid")
+                if oh then pcall(function() oh.Sit=false; oh.Seated:Wait() end) end
+                pcall(function()
+                    local th=ownerPlr.Character:FindFirstChild("HumanoidRootPart")
+                    if th then th.CFrame=th.CFrame+Vector3.new(0,6,0) end
+                end)
+            end
+            task.wait(0.12)
+            -- 1) teleport well under target
+            local under
+            if ownerPlr and ownerPlr.Character and ownerPlr.Character:FindFirstChild("HumanoidRootPart") then
+                under=ownerPlr.Character.HumanoidRootPart.CFrame*CFrame.new(0,-18,0)
+            else
+                under=veh:GetPivot()*CFrame.new(0,-18,0)
+            end
+            pcall(function() myRoot.CFrame=under end)
+            task.wait(0.12)
+            -- 2) bring ONLY the player character HRP (not vehicle)
+            if ownerPlr then
+                pcall(function()
+                    local th=ownerPlr.Character and ownerPlr.Character:FindFirstChild("HumanoidRootPart")
+                    local oh=ownerPlr.Character and ownerPlr.Character:FindFirstChildOfClass("Humanoid")
+                    if oh then oh.Sit=false end
+                    if th and myRoot then
+                        -- direct pin player only for a short window
+                        for _=1,20 do
+                            if not th.Parent then break end
+                            th.CFrame=myRoot.CFrame*CFrame.new(0,0,-3)
+                            task.wait(0.03)
+                        end
+                    end
+                end)
+            end
+            -- 3) RPG them (with self anti)
+            local wasAnti=S.antiRpgOn
+            applyAntiRpg(true)
+            local wep=getRPG()
+            if not wep then
+                -- try equip from backpack
+                pcall(function()
+                    for _,t in ipairs(plr.Backpack:GetChildren()) do
+                        local l=t.Name:lower()
+                        if t:IsA("Tool") and (l:find("rpg") or l:find("rocket")) then
+                            t.Parent=plr.Character;wep=t;break
+                        end
+                    end
+                end)
+            end
+            if ownerPlr and wep then
+                showPopup("Stealer","RPG driver…",T.ng)
+                for i=1,40 do
+                    if S.dead then break end
+                    local th=ownerPlr.Character and ownerPlr.Character:FindFirstChild("HumanoidRootPart")
+                    local oh=ownerPlr.Character and ownerPlr.Character:FindFirstChildOfClass("Humanoid")
+                    if not th or not oh or oh.Health<=0 then break end
+                    pcall(function() clickFire(th.Position+Vector3.new(0,1.5,0),wep) end)
+                    task.wait(0.04)
+                end
+            else
+                showPopup("Stealer","No RPG / no driver — TP only",T.wn)
+            end
+            task.wait(0.2)
+            if type(stopBring)=="function" and ownerPlr then pcall(function() stopBring(ownerPlr) end) end
+            -- 4) enter vehicle
+            local seat=nil
+            pcall(function()
+                for _,d in ipairs(veh:GetDescendants()) do
+                    if d:IsA("VehicleSeat") then seat=d;break end
+                end
+                if not seat then
+                    for _,d in ipairs(veh:GetDescendants()) do
+                        if d:IsA("Seat") then seat=d;break end
+                    end
+                end
+            end)
+            pcall(function()
+                myRoot=hrp or (plr.Character and plr.Character:FindFirstChild("HumanoidRootPart"))
+                if seat and myRoot then
+                    myRoot.CFrame=seat.CFrame*CFrame.new(0,3,0)
+                    task.wait(0.08)
+                    local h=plr.Character and plr.Character:FindFirstChildOfClass("Humanoid")
+                    if h then h.Sit=true end
+                elseif myRoot then
+                    myRoot.CFrame=veh:GetPivot()*CFrame.new(0,5,0)
+                end
+            end)
+            if not wasAnti then applyAntiRpg(false) end
+            S._vehicleStealBusy=false
+            showPopup("Stealer","Done",T.ok)
+        end)
     end);Y=Y+TOG_H+GAP
 
     s.CanvasSize = UDim2.new(0, 0, 0, Y + 20)
@@ -5112,6 +6076,14 @@ local function buildRPG()
     mkBtn(s,Y,"Grab Closest RPG",function()
         playSFX("click")
         fireRPGGiverPrompt()
+    end);Y=Y+TOG_H+GAP
+    mkBtn(s,Y,"Grab Until Found",function()
+        playSFX("click")
+        grabRPGUntilFound(50)
+    end);Y=Y+TOG_H+GAP
+    mkBtn(s,Y,"Stop Grab Loop",function()
+        S._rpgGrabLoop=false
+        showPopup("RPG Grabber","Stopped",T.txM)
     end);Y=Y+TOG_H+GAP
     mkBtn(s,Y,"Loop Grab (3s)",function()
         playSFX("click")
@@ -5149,26 +6121,39 @@ local function buildRPG()
     mkBtn(s,Y,"Launch Strobe Firework",function()
         task.spawn(function()
             local wep=getRPG();if not wep then showPopup("Firework","Equip RPG first",T.wn);return end
-            showPopup("Strobe Firework","Rapid fire…",T.ac)
+            showPopup("Strobe Firework","Launching skyward…",T.ac)
             S.fireworkOn=true
             local origin=hrp and hrp.Position or Vector3.new()
-            -- strobe: many fast single-point bursts in a ring + vertical columns
-            for pulse=1,24 do
+            -- straight vertical column up very high
+            local height=420
+            for h=20,height,12 do
                 if not S.fireworkOn then break end
-                local ang=pulse*0.55
-                local rad=18+pulse*1.2
-                local base=origin+Vector3.new(math.cos(ang)*rad,12+pulse*2.5,math.sin(ang)*rad)
-                for k=1,5 do
-                    local jitter=Vector3.new(mra(-3,3),mra(0,8),mra(-3,3))
-                    clickFire(base+jitter,wep)
+                clickFire(origin+Vector3.new(0,h,0),wep)
+                if h%36==0 then task.wait(0.02) end
+            end
+            -- apex explosion burst
+            local apex=origin+Vector3.new(0,height+20,0)
+            for i=1,48 do
+                if not S.fireworkOn then break end
+                local a=i*(math.pi*2/24)
+                local r=8+i*0.9
+                local y=math.sin(i*0.55)*18
+                clickFire(apex+Vector3.new(math.cos(a)*r,y,math.sin(a)*r),wep)
+                if i%6==0 then task.wait(0.03) end
+            end
+            -- secondary strobe rings falling slightly
+            for pulse=1,10 do
+                if not S.fireworkOn then break end
+                local ang=pulse*0.7
+                local rad=20+pulse*3
+                local base=apex+Vector3.new(math.cos(ang)*rad,-pulse*4,math.sin(ang)*rad)
+                for k=1,4 do
+                    clickFire(base+Vector3.new(mra(-4,4),mra(-2,6),mra(-4,4)),wep)
                 end
-                -- opposite side flash
-                local base2=origin+Vector3.new(-math.cos(ang)*rad,8+pulse*2,math.sin(ang+1)*rad)
-                clickFire(base2,wep)
                 task.wait(0.04)
             end
             S.fireworkOn=false
-            showPopup("Strobe Firework","Done",T.ok)
+            showPopup("Strobe Firework","Boom",T.ok)
         end)
     end);Y=Y+TOG_H+GAP
     mkBtn(s,Y,"Stop Firework",function() S.fireworkOn=false;showPopup("Firework","Stopped",T.txM) end);Y=Y+TOG_H+GAP
@@ -5209,20 +6194,55 @@ local function buildVis()
     mkTog(s,Y,{label="Head Dot",default=true,color=T.ac,cb=function(en) S.espHeadDot=en end});Y=Y+TOG_H+GAP
     mkTog(s,Y,{label="Avatar Icons (ESP)",default=true,color=T.ac,cb=function(en) S.espAvatar=en end});Y=Y+TOG_H+GAP
     mkTog(s,Y,{label="Show Faction",default=false,color=T.ac,cb=function(en) S.espFaction=en end});Y=Y+TOG_H+GAP
-    mkTog(s,Y,{label="Radar (minimap)",default=false,color=T.ac,cb=function(en)
-        S.espRadar=en
-        if en then
-            if not S.radarFrame then
-                S.radarFrame=new("Frame",sg,{
-                    Size=UDim2.new(0,140,0,140),Position=UDim2.new(1,-156,0,60),
-                    BackgroundColor3=T.bg,BackgroundTransparency=0.25,BorderSizePixel=0,ZIndex=50
-                });corner(S.radarFrame,70);mkStroke(S.radarFrame,T.ac,1)
-                new("Frame",S.radarFrame,{Size=UDim2.new(0,4,0,4),Position=UDim2.new(0.5,-2,0.5,-2),
-                    BackgroundColor3=T.ac,BorderSizePixel=0,ZIndex=51});corner(S.radarFrame:FindFirstChildWhichIsA("Frame"),2)
+    local function applyRadarStyle()
+        if not S.radarFrame then return end
+        for _,ch in ipairs(S.radarFrame:GetChildren()) do
+            if not ch:IsA("UICorner") and not ch:IsA("UIStroke") then ch:Destroy() end
+        end
+        local style=S.radarStyle or "Default"
+        local st=S.radarFrame:FindFirstChildOfClass("UIStroke")
+        if style=="Minimal" then
+            S.radarFrame.BackgroundTransparency=0.85
+            if st then st.Thickness=1;st.Transparency=0.5 end
+            corner(S.radarFrame,8)
+        elseif style=="Grid" then
+            S.radarFrame.BackgroundTransparency=0.2
+            if st then st.Thickness=1.5 end
+            corner(S.radarFrame,6)
+            for i=1,3 do
+                new("Frame",S.radarFrame,{Size=UDim2.new(1,0,0,1),Position=UDim2.new(0,0,i/4,0),BackgroundColor3=T.ac,BackgroundTransparency=0.7,BorderSizePixel=0,ZIndex=50})
+                new("Frame",S.radarFrame,{Size=UDim2.new(0,1,1,0),Position=UDim2.new(i/4,0,0,0),BackgroundColor3=T.ac,BackgroundTransparency=0.7,BorderSizePixel=0,ZIndex=50})
             end
-            S.radarFrame.Visible=true
-        elseif S.radarFrame then S.radarFrame.Visible=false end
-    end});Y=Y+TOG_H+GAP
+        elseif style=="Cross" then
+            S.radarFrame.BackgroundTransparency=0.3
+            corner(S.radarFrame,4)
+            new("Frame",S.radarFrame,{Size=UDim2.new(1,0,0,1),Position=UDim2.new(0,0,0.5,0),BackgroundColor3=T.ac,BackgroundTransparency=0.4,BorderSizePixel=0,ZIndex=50})
+            new("Frame",S.radarFrame,{Size=UDim2.new(0,1,1,0),Position=UDim2.new(0.5,0,0,0),BackgroundColor3=T.ac,BackgroundTransparency=0.4,BorderSizePixel=0,ZIndex=50})
+        elseif style=="Dot" then
+            S.radarFrame.BackgroundTransparency=0.4
+            corner(S.radarFrame,70)
+        elseif style=="Ring" then
+            S.radarFrame.BackgroundTransparency=0.55
+            corner(S.radarFrame,70)
+            new("Frame",S.radarFrame,{Size=UDim2.new(0.7,0,0.7,0),Position=UDim2.new(0.15,0,0.15,0),BackgroundTransparency=1,BorderSizePixel=0,ZIndex=50})
+            local ring=new("Frame",S.radarFrame,{Size=UDim2.new(0.7,0,0.7,0),Position=UDim2.new(0.15,0,0.15,0),BackgroundTransparency=1,BorderSizePixel=0,ZIndex=50})
+            mkStroke(ring,T.ac,1)
+            corner(ring,70)
+        elseif style=="Square" then
+            S.radarFrame.BackgroundTransparency=0.2
+            corner(S.radarFrame,4)
+        elseif style=="Hex" then
+            S.radarFrame.BackgroundTransparency=0.3
+            corner(S.radarFrame,16)
+            new("Frame",S.radarFrame,{Size=UDim2.new(1,0,0,1),Position=UDim2.new(0,0,0.33,0),BackgroundColor3=T.ac,BackgroundTransparency=0.65,BorderSizePixel=0,ZIndex=50})
+            new("Frame",S.radarFrame,{Size=UDim2.new(1,0,0,1),Position=UDim2.new(0,0,0.66,0),BackgroundColor3=T.ac,BackgroundTransparency=0.65,BorderSizePixel=0,ZIndex=50})
+        else
+            S.radarFrame.BackgroundTransparency=0.25
+            corner(S.radarFrame,70)
+        end
+        local c=new("Frame",S.radarFrame,{Size=UDim2.new(0,5,0,5),Position=UDim2.new(0.5,-2.5,0.5,-2.5),BackgroundColor3=T.ac,BorderSizePixel=0,ZIndex=51})
+        corner(c,style=="Cross" and 1 or 3)
+    end
     mkTog(s,Y,{label="Vehicle ESP",default=false,color=T.ac,cb=function(en)
         S.vehEspOn=en
         S.tgtTypes.Vehicles=en
@@ -5230,6 +6250,10 @@ local function buildVis()
             for _,d in pairs(S.vehESP) do hideVEB(d) end
         end
     end});Y=Y+TOG_H+GAP
+    mkSL(s,Y,"ESP Visibility");Y=Y+SEC_H+GAP
+    mkSl(s,Y,{label="ESP Transparency",min=0,max=90,default=math.floor((S.espVisAlpha or 0)*100),suffix="%",cb=function(v)
+        S.espVisAlpha=v/100
+    end});Y=Y+SL_H+GAP
     mkSL(s,Y,"ESP Colours");Y=Y+SEC_H+GAP
     local boxPrev=new("Frame",s,{Size=UDim2.new(0,22,0,22),Position=UDim2.new(0,PAD,0,Y+4),BackgroundColor3=S.espBoxCol,BorderSizePixel=0});corner(boxPrev,6)
     mkBtn(s,Y,"ESP Box Colour  →",function()
@@ -5320,6 +6344,16 @@ local function buildVis()
         Text="42m",TextColor3=Color3.fromRGB(165,170,195),Font=Enum.Font.Gotham,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left})
     local avPrev=new("ImageLabel",ov,{Size=UDim2.new(0,22,0,22),Position=UDim2.new(0.5,-11,0.5,-90),BackgroundColor3=T.bgS,BorderSizePixel=0,Image=getAvatarThumb(plr.UserId,48)});corner(avPrev,11)
     local tracer=new("Frame",ov,{Size=UDim2.new(0,2,0,36),Position=UDim2.new(0.5,-1,1,-40),BackgroundColor3=S.espTracerCol or T.ac,BorderSizePixel=0})
+    local skLines={}
+    local skPts={{0.5,-50,0.5,-20},{0.5,-20,0.5,10},{0.5,-20,0.35,-5},{0.35,-5,0.28,15},{0.5,-20,0.65,-5},{0.65,-5,0.72,15},{0.5,10,0.4,40},{0.4,40,0.38,55},{0.5,10,0.6,40},{0.6,40,0.62,55}}
+    for _,pt in ipairs(skPts) do
+        local ln=new("Frame",ov,{BackgroundColor3=S.espBoxCol or T.ac,BorderSizePixel=0,ZIndex=6})
+        skLines[#skLines+1]={ln,pt}
+    end
+    local vBox=new("Frame",ov,{Size=UDim2.new(0,48,0,28),Position=UDim2.new(0.78,-10,0.55,-14),BackgroundTransparency=1,BorderSizePixel=0})
+    local vSt=new("UIStroke",vBox,{Color=Color3.fromRGB(255,190,40),Thickness=1.5})
+    local vName=new("TextLabel",ov,{Size=UDim2.new(0,70,0,12),Position=UDim2.new(0.78,-20,0.55,-28),BackgroundTransparency=1,Text="Tank",TextColor3=Color3.fromRGB(255,200,80),Font=Enum.Font.GothamBold,TextSize=10})
+    local vDist=new("TextLabel",ov,{Size=UDim2.new(0,40,0,12),Position=UDim2.new(0.78,30,0.55,-6),BackgroundTransparency=1,Text="85m",TextColor3=Color3.fromRGB(255,190,40),Font=Enum.Font.Gotham,TextSize=9,TextXAlignment=Enum.TextXAlignment.Left})
     task.spawn(function()
         while ov and ov.Parent do
             local c=S.espBoxCol or T.ac
@@ -5327,6 +6361,24 @@ local function buildVis()
             box.Visible=S.espLines~=false;headDot.Visible=S.espHeadDot~=false
             nameLbl.Visible=S.espNames~=false;distLbl.Visible=S.espDist~=false
             hpBg.Visible=S.espHealth~=false;avPrev.Visible=S.espAvatar~=false;tracer.Visible=S.espTracers~=false
+            local skOn=S.espSkeleton==true
+            for _,item in ipairs(skLines) do
+                local ln,pt=item[1],item[2]
+                ln.Visible=skOn
+                if skOn then
+                    local x1,y1,x2,y2=pt[1],pt[2],pt[3],pt[4]
+                    local dx=(x2-x1)*(ov.AbsoluteSize.X>0 and ov.AbsoluteSize.X or 200)
+                    local dy=y2-y1
+                    local len=math.sqrt(dx*dx+dy*dy)
+                    ln.BackgroundColor3=S.espSkeletonCol or c
+                    ln.Size=UDim2.new(0,math.max(1,len),0,2)
+                    ln.Position=UDim2.new(x1,-1,0.5,y1)
+                    ln.Rotation=math.deg(math.atan2(dy,dx))
+                    ln.AnchorPoint=Vector2.new(0,0.5)
+                end
+            end
+            local vehOn=S.vehEspOn==true
+            vBox.Visible=vehOn;vName.Visible=vehOn;vDist.Visible=vehOn and S.espDist~=false
             task.wait(0.25)
         end
     end)
@@ -5370,7 +6422,18 @@ local function buildVis()
     mkTog(s,Y,{label="X-Ray",bindKey="xray",default=false,color=T.ac,cb=function(en) S.xrayOn=en;applyXR(en) end});Y=Y+TOG_H+GAP
 
     mkSL(s,Y,"World Editor");Y=Y+SEC_H+GAP
-    mkSl(s,Y,{label="Time of Day",min=0,max=24,default=12,suffix="h",cb=function(v) Li.ClockTime=v end});Y=Y+SL_H+GAP
+    mkSl(s,Y,{label="Time of Day",min=0,max=24,default=12,suffix="h",cb=function(v)
+        S.lockedClockTime=v;Li.ClockTime=v
+        if S.clockLock or S.nightModeOn then S.clockLock=true end
+    end});Y=Y+SL_H+GAP
+    mkTog(s,Y,{label="Lock Time of Day (anti-reset)",default=false,color=T.ac,cb=function(en)
+        S.clockLock=en
+        if en then
+            S.lockedClockTime=Li.ClockTime or S.lockedClockTime or 12
+            Li.ClockTime=S.lockedClockTime
+        end
+        showPopup("Clock Lock",en and ("Locked @ "..string.format("%.1f",S.lockedClockTime)) or "Unlocked",T.ac)
+    end});Y=Y+TOG_H+GAP
     mkSl(s,Y,{label="Brightness",min=0,max=10,default=2,cb=function(v) Li.Brightness=v end});Y=Y+SL_H+GAP
     mkSl(s,Y,{label="Fog Start",min=0,max=1000,default=0,cb=function(v) Li.FogStart=v end});Y=Y+SL_H+GAP
     mkSl(s,Y,{label="Fog End",min=50,max=100000,default=100000,cb=function(v) Li.FogEnd=v end});Y=Y+SL_H+GAP
@@ -5385,7 +6448,18 @@ local function buildVis()
         local a=Li:FindFirstChildOfClass("Atmosphere")
         if a then a.Haze=v end
     end});Y=Y+SL_H+GAP
-    mkTog(s,Y,{label="Night Mode",default=false,color=T.ac,cb=function(en) Li.ClockTime=en and 0 or 14 end});Y=Y+TOG_H+GAP
+    mkTog(s,Y,{label="Night Mode",default=false,color=T.ac,cb=function(en)
+        S.nightModeOn=en
+        if en then
+            S.clockLock=true
+            S.lockedClockTime=0
+            Li.ClockTime=0
+        else
+            S.lockedClockTime=14
+            Li.ClockTime=14
+        end
+        showPopup("Night Mode",en and "Permanent night" or "Day",T.ac)
+    end});Y=Y+TOG_H+GAP
     mkBtn(s,Y,"Clear Fog",function() Li.FogEnd=1e6;Li.FogStart=0;showPopup("World","Fog cleared",T.ok) end);Y=Y+TOG_H+GAP
     mkBtn(s,Y,"Reset Atmosphere",function()
         for _,a in pairs(Li:GetChildren()) do
@@ -5393,19 +6467,53 @@ local function buildVis()
         end
         showPopup("World","Atmosphere reset",T.ok)
     end);Y=Y+TOG_H+GAP
-    mkDropdown(s,Y,"Skybox",{"Game's Default Sky","Vibrant Sunset","Night Sky","Stormy","Space","Neon City"},S.skyboxSelected or "Game's Default Sky",function(v)
+    mkDropdown(s,Y,"Skybox",{"Game's Default Sky","Blue Sky","Cloudy Day","Vibrant Sunset","Night Sky","Pink Dusk","Stormy","Space"},S.skyboxSelected or "Game's Default Sky",function(v)
         S.skyboxSelected=v
         pcall(function()
             local sky=Li:FindFirstChildOfClass("Sky")
             if not sky then sky=Instance.new("Sky");sky.Parent=Li end
-            if v=="Night Sky" then
-                sky.SkyboxBk="rbxassetid://159067838";sky.SkyboxDn="rbxassetid://159067646"
-                sky.SkyboxFt="rbxassetid://159067838";sky.SkyboxLf="rbxassetid://159067646"
-                sky.SkyboxRt="rbxassetid://159067838";sky.SkyboxUp="rbxassetid://159067646"
+            local function setSky(bk,dn,ft,lf,rt,up)
+                sky.SkyboxBk=bk;sky.SkyboxDn=dn;sky.SkyboxFt=ft
+                sky.SkyboxLf=lf;sky.SkyboxRt=rt;sky.SkyboxUp=up
+            end
+            if v=="Game's Default Sky" then
+                sky:Destroy()
+            elseif v=="Blue Sky" then
+                -- realistic clear blue sky
+                setSky(
+                    "rbxassetid://6444884337","rbxassetid://6444884780","rbxassetid://6444884337",
+                    "rbxassetid://6444884337","rbxassetid://6444884337","rbxassetid://6412503613"
+                )
+            elseif v=="Cloudy Day" then
+                setSky(
+                    "rbxassetid://600830446","rbxassetid://600831635","rbxassetid://600832720",
+                    "rbxassetid://600833862","rbxassetid://600835177","rbxassetid://600837096"
+                )
+            elseif v=="Vibrant Sunset" then
+                setSky(
+                    "rbxassetid://458016711","rbxassetid://458016826","rbxassetid://458016791",
+                    "rbxassetid://458016655","rbxassetid://458016782","rbxassetid://458016792"
+                )
+            elseif v=="Night Sky" then
+                setSky(
+                    "rbxassetid://12064107","rbxassetid://12064152","rbxassetid://12064121",
+                    "rbxassetid://12064115","rbxassetid://12064125","rbxassetid://12064131"
+                )
+            elseif v=="Pink Dusk" then
+                setSky(
+                    "rbxassetid://271042516","rbxassetid://271077191","rbxassetid://271042556",
+                    "rbxassetid://271042310","rbxassetid://271042467","rbxassetid://271077958"
+                )
+            elseif v=="Stormy" then
+                setSky(
+                    "rbxassetid://153095369","rbxassetid://153095394","rbxassetid://153095420",
+                    "rbxassetid://153095442","rbxassetid://153095462","rbxassetid://153095488"
+                )
             elseif v=="Space" then
-                sky.SkyboxBk="rbxassetid://159454299";sky.SkyboxDn="rbxassetid://159454286"
-                sky.SkyboxFt="rbxassetid://159454299";sky.SkyboxLf="rbxassetid://159454286"
-                sky.SkyboxRt="rbxassetid://159454299";sky.SkyboxUp="rbxassetid://159454286"
+                setSky(
+                    "rbxassetid://159454299","rbxassetid://159454286","rbxassetid://159454299",
+                    "rbxassetid://159454286","rbxassetid://159454299","rbxassetid://159454286"
+                )
             end
         end)
         CHQueueSave()
@@ -5417,7 +6525,26 @@ local function buildVis()
     mkSL(s,Y,"Camera");Y=Y+SEC_H+GAP
     mkTog(s,Y,{label="No Screen Shake",default=false,color=T.ac,cb=function(en) S.noShakeOn=en;applyNoShake(en) end});Y=Y+TOG_H+GAP
     mkSl(s,Y,{label="Field of View",min=60,max=120,default=70,suffix="°",cb=function(v) cam.FieldOfView=v end});Y=Y+SL_H+GAP
-    s.CanvasSize=UDim2.new(0,0,0,Y+10)
+        mkSL(s,Y,"Radar");Y=Y+SEC_H+GAP
+    mkTog(s,Y,{label="Radar (minimap)",default=false,color=T.ac,cb=function(en)
+        S.espRadar=en
+        if en then
+            if not S.radarFrame then
+                S.radarFrame=new("Frame",sg,{
+                    Size=UDim2.new(0,140,0,140),Position=UDim2.new(1,-156,0,60),
+                    BackgroundColor3=T.bg,BackgroundTransparency=0.25,BorderSizePixel=0,ZIndex=50
+                });mkStroke(S.radarFrame,T.ac,1)
+            end
+            applyRadarStyle()
+            S.radarFrame.Visible=true
+        elseif S.radarFrame then S.radarFrame.Visible=false end
+    end});Y=Y+TOG_H+GAP
+    mkDropdown(s,Y,"Radar Style",{"Default","Dot","Cross","Grid","Minimal","Ring","Square","Hex"},S.radarStyle or "Default",function(v)
+        S.radarStyle=v
+        if S.radarFrame then applyRadarStyle() end
+    end);Y=Y+56+GAP
+    mkSl(s,Y,{label="Radar Range",min=50,max=1000,default=S.radarRange or 250,suffix=" st",cb=function(v) S.radarRange=v end});Y=Y+SL_H+GAP
+s.CanvasSize=UDim2.new(0,0,0,Y+10)
 end
 
 local function buildPlayer()
@@ -5914,8 +7041,89 @@ local function buildMisc()
         elseif blur then blur:Destroy() end
     end});Y=Y+TOG_H+GAP
     mkTog(s,Y,{label="Streamproof UI",default=true,color=T.ac,cb=function(en)
-        S.streamproof=en
-        showPopup("Streamproof",en and "Enabled (executor dependent)" or "Disabled",T.ac)
+        applyStreamproof(en)
+        showPopup("Streamproof",en and "Re-parented to hidden GUI" or "PlayerGui",T.ac)
+    end});Y=Y+TOG_H+GAP
+    mkTog(s,Y,{label="Streamer Mode (hide names)",default=false,color=T.wn,cb=function(en)
+        S.streamerMode=en
+        local StarterGui=game:GetService("StarterGui")
+        local function hideWTLeaderboard(hide)
+            pcall(function()
+                local pg=plr:FindFirstChild("PlayerGui")
+                if not pg then return end
+                for _,g in ipairs(pg:GetChildren()) do
+                    if not g:IsA("ScreenGui") then continue end
+                    local n=g.Name:lower()
+                    -- War Tycoon / custom boards
+                    if n:find("leader") or n:find("score") or n:find("playerlist") or n:find("tablist")
+                        or n:find("board") or n:find("rank") or n:find("statsui") then
+                        if hide then
+                            if g:GetAttribute("CH_SM_En")==nil then g:SetAttribute("CH_SM_En",g.Enabled) end
+                            g.Enabled=false
+                        else
+                            local was=g:GetAttribute("CH_SM_En")
+                            if was~=nil then g.Enabled=was; g:SetAttribute("CH_SM_En",nil) end
+                        end
+                    end
+                end
+                -- also match frames named leaderboard deeper
+                for _,d in ipairs(pg:GetDescendants()) do
+                    if d:IsA("Frame") or d:IsA("ScrollingFrame") then
+                        local n=d.Name:lower()
+                        if n=="leaderboard" or n=="playerlist" or n=="scoreboard" or n:find("leaderboard") then
+                            if hide then
+                                if d:GetAttribute("CH_SM_Vis")==nil then d:SetAttribute("CH_SM_Vis",d.Visible) end
+                                d.Visible=false
+                            else
+                                local was=d:GetAttribute("CH_SM_Vis")
+                                if was~=nil then d.Visible=was; d:SetAttribute("CH_SM_Vis",nil) end
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+        if en then
+            pcall(function() StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList,false) end)
+            hideWTLeaderboard(true)
+            pcall(function()
+                for _,g in ipairs(plr.PlayerGui:GetDescendants()) do
+                    if g:IsA("TextLabel") or g:IsA("TextButton") then
+                        local t=(g.Text or "")
+                        if #t>0 and (#t<24) then
+                            for _,p in ipairs(Players:GetPlayers()) do
+                                if t==p.Name or t==p.DisplayName then
+                                    g:SetAttribute("CH_SM_Prev",t)
+                                    g.Text="Player"
+                                    break
+                                end
+                            end
+                        end
+                    end
+                end
+            end)
+            S._streamerPrevNames=S.espNames
+            S.espNames=false
+        else
+            pcall(function() StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList,true) end)
+            hideWTLeaderboard(false)
+            pcall(function()
+                for _,g in ipairs(plr.PlayerGui:GetDescendants()) do
+                    local prev=g:GetAttribute("CH_SM_Prev")
+                    if prev then g.Text=prev;g:SetAttribute("CH_SM_Prev",nil) end
+                end
+            end)
+            if S._streamerPrevNames~=nil then S.espNames=S._streamerPrevNames end
+        end
+        showPopup("Streamer Mode",en and "Names + boards hidden" or "Restored",T.wn)
+    end});Y=Y+TOG_H+GAP
+    mkTog(s,Y,{label="Anti RPG Spam",default=false,color=T.ng,cb=function(en)
+        applyAntiRpg(en)
+        showPopup("Anti RPG",en and "Protecting" or "Off",en and T.ok or T.txM)
+    end});Y=Y+TOG_H+GAP
+    mkTog(s,Y,{label="Exploiter Alert",default=false,color=T.wn,cb=function(en)
+        S.exploiterAlertOn=en
+        showPopup("Exploiter Alert",en and "Scanning…" or "Off",T.ac)
     end});Y=Y+TOG_H+GAP
     -- Universal pin any feature
     mkSL(s,Y,"Pin Feature");Y=Y+SEC_H+GAP
@@ -6235,11 +7443,31 @@ local function buildMisc()
     mkSL(s,Y,"IY-Style Tools");Y=Y+SEC_H+GAP
     mkBtn(s,Y,"Refresh Character",function()
         pcall(function()
-            local hum2=plr.Character and plr.Character:FindFirstChildOfClass("Humanoid")
-            if hum2 then hum2.Health=0 end
+            local c=plr.Character
+            if not c then showPopup("Refresh","No character",T.wn);return end
+            local hum2=c:FindFirstChildOfClass("Humanoid")
+            local root=c:FindFirstChild("HumanoidRootPart")
+            if not hum2 or not root then showPopup("Refresh","Missing parts",T.wn);return end
+            local tools={}
+            for _,t in ipairs(plr.Backpack:GetChildren()) do
+                if t:IsA("Tool") then
+                    local cl=t:Clone();table.insert(tools,cl)
+                end
+            end
+            for _,t in ipairs(c:GetChildren()) do
+                if t:IsA("Tool") then
+                    local cl=t:Clone();table.insert(tools,cl)
+                end
+            end
+            S._refreshRestore={tools=tools,cf=root.CFrame}
+            hum2.Health=0
         end)
-        showPopup("IY","Character refresh",T.ok)
+        showPopup("Refresh","Soft refresh (keep tools + pos)",T.ok)
     end);Y=Y+TOG_H+GAP
+    mkTog(s,Y,{label="Lag Switch (outgoing throttle)",default=false,color=T.ng,cb=function(en)
+        applyLagSwitch(en)
+        showPopup("Lag Switch",en and "ON — packets throttled" or "OFF",en and T.ng or T.ok)
+    end});Y=Y+TOG_H+GAP
     mkBtn(s,Y,"Rejoin Server",function()
         pcall(function() TS:TeleportToPlaceInstance(game.PlaceId,game.JobId,plr) end)
     end);Y=Y+TOG_H+GAP
@@ -6335,6 +7563,49 @@ local function buildLayout()
     end
     mkModeBtn("panel-top","Top Bar","Pill navigation at the top of the window","top")
     mkModeBtn("panel-left","Side Bar","Icon navigation on the left side","side")
+    mkSL(s,Y,"Window Material");Y=Y+SEC_H+GAP
+    local function applyUiStyle(style,skipNotif)
+        S.uiStyle=style or S.uiStyle or "Solid"
+        -- NEVER blur whole Lighting — only style the menu frame
+        pcall(function()
+            local blur=Li:FindFirstChild("CH_UIBlur")
+            if blur then blur:Destroy() end
+            local base=(S.winTrans or winTrans or 18)/100
+            -- material adds a bit of extra see-through on top of slider
+            local extra=0
+            local col=T.bg
+            if S.uiStyle=="Acrylic" then extra=0.12; col=T.bg
+            elseif S.uiStyle=="Glass" then extra=0.22; col=Color3.fromRGB(18,20,28)
+            elseif S.uiStyle=="Mica" then extra=0.08; col=T.bgS
+            elseif S.uiStyle=="Liquid" then extra=0.18; col=T.bgT
+            else extra=0; col=T.bg end
+            local tr=math.clamp(base+extra,0,0.92)
+            if win then
+                win.BackgroundColor3=col
+                win.BackgroundTransparency=tr
+            end
+            if shadow then
+                shadow.BackgroundTransparency=math.clamp(tr+0.15,0,0.95)
+            end
+            if winStroke then
+                if S.uiStyle=="Glass" or S.uiStyle=="Liquid" then
+                    winStroke.Transparency=0.25;winStroke.Thickness=1.2;winStroke.Color=Color3.fromRGB(180,200,255)
+                elseif S.uiStyle=="Acrylic" then
+                    winStroke.Transparency=0.4;winStroke.Thickness=1;winStroke.Color=T.ac
+                elseif S.uiStyle=="Mica" then
+                    winStroke.Transparency=0.45;winStroke.Thickness=0.8;winStroke.Color=T.bd
+                else
+                    winStroke.Transparency=0.5;winStroke.Thickness=0.5;winStroke.Color=T.bd
+                end
+            end
+        end)
+        if not skipNotif then showPopup("UI Style",S.uiStyle,T.ac) end
+    end
+    -- keep material + transparency in sync
+    S._applyUiStyle=applyUiStyle
+    for _,stName in ipairs({"Solid","Acrylic","Glass","Mica","Liquid"}) do
+        mkBtn(s,Y,stName.." Material",function() applyUiStyle(stName) end);Y=Y+TOG_H+GAP
+    end
     mkSL(s,Y,"Config");Y=Y+SEC_H+GAP
     mkBtn(s,Y,"Save Config",function()
         CHSaveSettings()
@@ -6351,7 +7622,11 @@ local function buildLayout()
         showPopup("Config","Reset — rejoin to apply defaults",T.wn)
     end);Y=Y+TOG_H+GAP
     mkSL(s,Y,"Window");Y=Y+SEC_H+GAP
-    mkSl(s,Y,{label="Transparency",min=0,max=85,default=S.winTrans or 18,suffix="%",cb=function(v) winTrans=v;S.winTrans=v;win.BackgroundTransparency=v/100 end});Y=Y+SL_H+GAP
+    mkSl(s,Y,{label="Transparency",min=0,max=85,default=S.winTrans or 18,suffix="%",cb=function(v)
+        winTrans=v;S.winTrans=v
+        if type(S._applyUiStyle)=="function" then S._applyUiStyle(S.uiStyle or "Solid",true)
+        else win.BackgroundTransparency=v/100 end
+    end});Y=Y+SL_H+GAP
     mkSL(s,Y,"Select Theme");Y=Y+SEC_H+GAP
     local hint=new("TextLabel",s,{Size=UDim2.new(1,-PAD*2,0,14),Position=UDim2.new(0,PAD,0,Y),BackgroundTransparency=1,TextColor3=T.txD,Font=Enum.Font.Gotham,TextSize=9,Text="#"..#TL.." themes — click to apply",TextXAlignment=Enum.TextXAlignment.Left});ra("tD",hint,"TextColor3");Y=Y+18
     local CW=mfl((WW-PAD-8)/2-4);local CH=82;local CG=6
@@ -6373,6 +7648,249 @@ local function buildOnline()
         pcall(function() if setclipboard then setclipboard(url) end end)
         showPopup("Website","Link copied to clipboard",T.ac)
     end);Y=Y+TOG_H+GAP
+
+    -- ===== Kill Log (global across accounts) =====
+    mkSL(s,Y,"Kill Log");Y=Y+SEC_H+GAP
+    local klStats=new("TextLabel",s,{
+        Size=UDim2.new(1,-PAD*2,0,18),Position=UDim2.new(0,PAD,0,Y),BackgroundTransparency=1,
+        Text=string.format("Total Kills: %d   ·   Deaths: %d",S.totalKills or 0,S.totalDeaths or 0),
+        TextColor3=T.ac,Font=Enum.Font.GothamBold,TextSize=12,TextXAlignment=Enum.TextXAlignment.Left
+    });Y=Y+22
+    local klSearch=new("TextBox",s,{
+        Size=UDim2.new(1,-PAD*2,0,28),Position=UDim2.new(0,PAD,0,Y),
+        BackgroundColor3=T.bgT,Text="",PlaceholderText="Search kills by username…",PlaceholderColor3=T.txD,
+        TextColor3=T.tx,Font=Enum.Font.Gotham,TextSize=12,BorderSizePixel=0,ClearTextOnFocus=false
+    });corner(klSearch,CORNER);mkStroke(klSearch,T.bd)
+    new("UIPadding",klSearch,{PaddingLeft=UDim.new(0,10)});Y=Y+34
+    local klFrame=new("Frame",s,{
+        Size=UDim2.new(1,-PAD*2,0,220),Position=UDim2.new(0,PAD,0,Y),
+        BackgroundColor3=T.bgS,BackgroundTransparency=0.12,BorderSizePixel=0
+    });corner(klFrame,CORNER);mkStroke(klFrame,T.bd);Y=Y+228
+    local klScroll=new("ScrollingFrame",klFrame,{
+        Size=UDim2.new(1,-4,1,-4),Position=UDim2.new(0,2,0,2),BackgroundTransparency=1,
+        ScrollBarThickness=3,ScrollBarImageColor3=T.ac,CanvasSize=UDim2.new(0,0,0,0),BorderSizePixel=0
+    })
+    local function refreshKillLog(filter)
+        for _,ch in ipairs(klScroll:GetChildren()) do if not ch:IsA("UICorner") then ch:Destroy() end end
+        klStats.Text=string.format("Total Kills: %d   ·   Deaths: %d",S.totalKills or 0,S.totalDeaths or 0)
+        local y=6
+        local q=(filter or ""):lower()
+        for i=#S.killLog,1,-1 do
+            local e=S.killLog[i]
+            if not e then continue end
+            local nm=(e.displayName or e.name or ""):lower()
+            local un=(e.name or ""):lower()
+            if q~="" and not nm:find(q,1,true) and not un:find(q,1,true) then continue end
+            local row=new("Frame",klScroll,{
+                Size=UDim2.new(1,-8,0,40),Position=UDim2.new(0,4,0,y),
+                BackgroundColor3=T.bgT,BackgroundTransparency=0.15,BorderSizePixel=0
+            });corner(row,6)
+            local av=new("ImageLabel",row,{
+                Size=UDim2.new(0,28,0,28),Position=UDim2.new(0,6,0.5,-14),
+                BackgroundColor3=T.bgS,BorderSizePixel=0,
+                Image=getAvatarThumb(e.userId or 1,48)
+            });corner(av,14)
+            local isKill=(e.type~="death")
+            new("TextLabel",row,{Size=UDim2.new(1,-90,0,16),Position=UDim2.new(0,40,0,4),BackgroundTransparency=1,
+                Text=(isKill and "Killed " or "Death · ")..(e.displayName or e.name or "?"),
+                TextColor3=isKill and T.ok or T.ng,Font=Enum.Font.GothamBold,TextSize=11,
+                TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd})
+            local tstr=""
+            pcall(function()
+                if e.time then tstr=os.date("%m/%d %H:%M",e.time) end
+            end)
+            new("TextLabel",row,{Size=UDim2.new(1,-90,0,14),Position=UDim2.new(0,40,0,20),BackgroundTransparency=1,
+                Text="@"..(e.name or "?").."  ·  "..tstr,
+                TextColor3=T.txD,Font=Enum.Font.Gotham,TextSize=10,
+                TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd})
+            y=y+44
+        end
+        if y<=6 then
+            new("TextLabel",klScroll,{Size=UDim2.new(1,-12,0,20),Position=UDim2.new(0,6,0,8),BackgroundTransparency=1,
+                Text="No kills logged yet",TextColor3=T.txD,Font=Enum.Font.Gotham,TextSize=11,
+                TextXAlignment=Enum.TextXAlignment.Left})
+            y=30
+        end
+        klScroll.CanvasSize=UDim2.new(0,0,0,y+8)
+    end
+    refreshKillLog("")
+    klSearch:GetPropertyChangedSignal("Text"):Connect(function() refreshKillLog(klSearch.Text) end)
+    mkBtn(s,Y,"Refresh Kill Log",function() loadKillLog();refreshKillLog(klSearch.Text) end);Y=Y+TOG_H+GAP
+    mkBtn(s,Y,"Clear Kill Log",function()
+        S.killLog={};S.totalKills=0;S.totalDeaths=0;saveKillLog();refreshKillLog("")
+        showPopup("Kill Log","Cleared",T.wn)
+    end);Y=Y+TOG_H+GAP
+
+    -- ===== Hitlist =====
+    mkSL(s,Y,"Hitlist");Y=Y+SEC_H+GAP
+    mkTog(s,Y,{label="Banner Alert when in server",default=true,color=T.ng,cb=function(en) S.hitlistAlertOn=en end});Y=Y+TOG_H+GAP
+    mkTog(s,Y,{label="Join Sniper notify",default=false,color=T.ac,cb=function(en) S.joinSniperOn=en end});Y=Y+TOG_H+GAP
+    local hlSearch=new("TextBox",s,{
+        Size=UDim2.new(1,-PAD*2-70,0,30),Position=UDim2.new(0,PAD,0,Y),
+        BackgroundColor3=T.bgT,Text="",PlaceholderText="Username, display name, or UserId…",PlaceholderColor3=T.txD,
+        TextColor3=T.tx,Font=Enum.Font.Gotham,TextSize=12,BorderSizePixel=0,ClearTextOnFocus=false
+    });corner(hlSearch,CORNER);mkStroke(hlSearch,T.bd)
+    new("UIPadding",hlSearch,{PaddingLeft=UDim.new(0,10)})
+    local hlGo=new("TextButton",s,{
+        Size=UDim2.new(0,64,0,30),Position=UDim2.new(1,-PAD-64,0,Y),
+        BackgroundColor3=T.ac,Text="Lookup",TextColor3=Color3.fromRGB(255,255,255),
+        Font=Enum.Font.GothamBold,TextSize=11,BorderSizePixel=0
+    });corner(hlGo,CORNER);Y=Y+36
+    -- Server player picker (scroll + select)
+    local hlServerLbl=new("TextLabel",s,{Size=UDim2.new(1,-PAD*2,0,14),Position=UDim2.new(0,PAD,0,Y),BackgroundTransparency=1,
+        Text="Or pick from this server:",TextColor3=T.txD,Font=Enum.Font.Gotham,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left})
+    Y=Y+16
+    local hlServerFrame=new("Frame",s,{Size=UDim2.new(1,-PAD*2,0,100),Position=UDim2.new(0,PAD,0,Y),BackgroundColor3=T.bgS,BackgroundTransparency=0.12,BorderSizePixel=0})
+    corner(hlServerFrame,CORNER);mkStroke(hlServerFrame,T.bd);Y=Y+108
+    local hlServerScroll=new("ScrollingFrame",hlServerFrame,{
+        Size=UDim2.new(1,-4,1,-4),Position=UDim2.new(0,2,0,2),BackgroundTransparency=1,
+        ScrollBarThickness=3,ScrollBarImageColor3=T.ac,CanvasSize=UDim2.new(0,0,0,0),BorderSizePixel=0
+    })
+    local function refreshServerPicker(filter)
+        for _,ch in ipairs(hlServerScroll:GetChildren()) do ch:Destroy() end
+        local y=4
+        local q=(filter or ""):lower()
+        for _,p in ipairs(Players:GetPlayers()) do
+            if p==plr then continue end
+            local dn=(p.DisplayName or ""):lower();local un=(p.Name or ""):lower()
+            if q~="" and not dn:find(q,1,true) and not un:find(q,1,true) then continue end
+            local row=new("TextButton",hlServerScroll,{
+                Size=UDim2.new(1,-8,0,32),Position=UDim2.new(0,4,0,y),
+                BackgroundColor3=T.bgT,Text="",BorderSizePixel=0
+            });corner(row,6)
+            local av=new("ImageLabel",row,{Size=UDim2.new(0,24,0,24),Position=UDim2.new(0,4,0.5,-12),BackgroundColor3=T.bgS,BorderSizePixel=0,Image=getAvatarThumb(p.UserId,48)});corner(av,12)
+            new("TextLabel",row,{Size=UDim2.new(1,-40,0,14),Position=UDim2.new(0,34,0,2),BackgroundTransparency=1,
+                Text=p.DisplayName or p.Name,TextColor3=T.tx,Font=Enum.Font.GothamBold,TextSize=11,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd})
+            new("TextLabel",row,{Size=UDim2.new(1,-40,0,12),Position=UDim2.new(0,34,0,16),BackgroundTransparency=1,
+                Text="@"..p.Name.." · "..tostring(p.UserId),TextColor3=T.txD,Font=Enum.Font.Gotham,TextSize=9,TextXAlignment=Enum.TextXAlignment.Left})
+            row.MouseButton1Click:Connect(function()
+                playSFX("click")
+                hlSearch.Text=p.Name
+                task.spawn(function()
+                    local profile=fetchRobloxUser(tostring(p.UserId))
+                    if not profile then
+                        profile={userId=p.UserId,name=p.Name,displayName=p.DisplayName,description="",created=""}
+                    end
+                    showProfile(profile)
+                end)
+            end)
+            y=y+36
+        end
+        hlServerScroll.CanvasSize=UDim2.new(0,0,0,math.max(y,4))
+    end
+    refreshServerPicker("")
+    hlSearch:GetPropertyChangedSignal("Text"):Connect(function() refreshServerPicker(hlSearch.Text) end)
+
+    local hlInfo=new("Frame",s,{
+        Size=UDim2.new(1,-PAD*2,0,130),Position=UDim2.new(0,PAD,0,Y),
+        BackgroundColor3=T.bgS,BackgroundTransparency=0.12,BorderSizePixel=0
+    });corner(hlInfo,CORNER);mkStroke(hlInfo,T.bd);Y=Y+138
+    local hlAvatar=new("ImageLabel",hlInfo,{
+        Size=UDim2.new(0,72,0,72),Position=UDim2.new(0,12,0,12),
+        BackgroundColor3=T.bgT,BorderSizePixel=0,Image=""
+    });corner(hlAvatar,8)
+    local hlName=new("TextLabel",hlInfo,{Size=UDim2.new(1,-100,0,20),Position=UDim2.new(0,96,0,10),BackgroundTransparency=1,
+        Text="Search a user",TextColor3=T.tx,Font=Enum.Font.GothamBold,TextSize=14,TextXAlignment=Enum.TextXAlignment.Left})
+    local hlUser=new("TextLabel",hlInfo,{Size=UDim2.new(1,-100,0,16),Position=UDim2.new(0,96,0,32),BackgroundTransparency=1,
+        Text="",TextColor3=T.txM,Font=Enum.Font.Gotham,TextSize=11,TextXAlignment=Enum.TextXAlignment.Left})
+    local hlMeta=new("TextLabel",hlInfo,{Size=UDim2.new(1,-100,0,50),Position=UDim2.new(0,96,0,52),BackgroundTransparency=1,
+        Text="",TextColor3=T.txD,Font=Enum.Font.Gotham,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left,TextYAlignment=Enum.TextYAlignment.Top,TextWrapped=true})
+    local hlCurrent=nil
+    local function showProfile(p)
+        hlCurrent=p
+        if not p then
+            hlName.Text="Not found";hlUser.Text="";hlMeta.Text="";hlAvatar.Image=""
+            return
+        end
+        hlName.Text=p.displayName or p.name or "?"
+        hlUser.Text="@"..(p.name or "?").."  ·  UID "..tostring(p.userId or "?")
+        hlAvatar.Image=getAvatarThumb(p.userId or 1,150)
+        local bits={}
+        if p.created and p.created~="" then bits[#bits+1]="Created: "..tostring(p.created):sub(1,10) end
+        if p.friends then bits[#bits+1]="Friends: "..tostring(p.friends) end
+        if p.followers then bits[#bits+1]="Followers: "..tostring(p.followers) end
+        if p.followings then bits[#bits+1]="Following: "..tostring(p.followings) end
+        if p.isBanned then bits[#bits+1]="BANNED" end
+        local desc=(p.description or ""):gsub(""," ")
+        if #desc>80 then desc=desc:sub(1,80).."…" end
+        if #desc>0 then bits[#bits+1]=desc end
+        hlMeta.Text=table.concat(bits,"  ·  ")
+    end
+    hlGo.MouseButton1Click:Connect(function()
+        playSFX("click")
+        local q=hlSearch.Text:gsub("^%s+",""):gsub("%s+$","")
+        if q=="" then showPopup("Hitlist","Enter username or ID",T.wn);return end
+        showPopup("Hitlist","Looking up…",T.wn)
+        task.spawn(function()
+            local p=fetchRobloxUser(q)
+            showProfile(p)
+            if p then showPopup("Hitlist",p.displayName or p.name,T.ok)
+            else showPopup("Hitlist","User not found",T.ng) end
+        end)
+    end)
+    mkBtn(s,Y,"Add to Hitlist (priority)",function()
+        if not hlCurrent or not hlCurrent.userId then showPopup("Hitlist","Lookup a user first",T.wn);return end
+        local e={
+            userId=hlCurrent.userId,name=hlCurrent.name,displayName=hlCurrent.displayName,
+            description=hlCurrent.description,created=hlCurrent.created,
+            friends=hlCurrent.friends,followers=hlCurrent.followers,followings=hlCurrent.followings,
+            priority=true,addedAt=os.time()
+        }
+        S.hitlist[tostring(e.userId)]=e
+        saveHitlist()
+        showPopup("Hitlist","Added "..(e.displayName or e.name),T.ng)
+        -- if already in server, banner now
+        for _,p in ipairs(Players:GetPlayers()) do
+            if p.UserId==e.userId then checkHitlistPlayer(p) end
+        end
+        if refreshHitlistUI then refreshHitlistUI() end
+    end);Y=Y+TOG_H+GAP
+    local hlListFrame=new("Frame",s,{
+        Size=UDim2.new(1,-PAD*2,0,160),Position=UDim2.new(0,PAD,0,Y),
+        BackgroundColor3=T.bgS,BackgroundTransparency=0.12,BorderSizePixel=0
+    });corner(hlListFrame,CORNER);mkStroke(hlListFrame,T.bd);Y=Y+168
+    local hlListScroll=new("ScrollingFrame",hlListFrame,{
+        Size=UDim2.new(1,-4,1,-4),Position=UDim2.new(0,2,0,2),BackgroundTransparency=1,
+        ScrollBarThickness=3,ScrollBarImageColor3=T.ac,CanvasSize=UDim2.new(0,0,0,0),BorderSizePixel=0
+    })
+    function refreshHitlistUI()
+        for _,ch in ipairs(hlListScroll:GetChildren()) do ch:Destroy() end
+        local y=4
+        for uid,e in pairs(S.hitlist) do
+            local row=new("Frame",hlListScroll,{
+                Size=UDim2.new(1,-8,0,44),Position=UDim2.new(0,4,0,y),
+                BackgroundColor3=T.bgT,BackgroundTransparency=0.1,BorderSizePixel=0
+            });corner(row,6);mkStroke(row,T.ng,1)
+            local av=new("ImageLabel",row,{
+                Size=UDim2.new(0,32,0,32),Position=UDim2.new(0,6,0.5,-16),
+                BackgroundColor3=T.bgS,BorderSizePixel=0,Image=getAvatarThumb(e.userId or 1,48)
+            });corner(av,16)
+            new("TextLabel",row,{Size=UDim2.new(0.55,0,0,16),Position=UDim2.new(0,44,0,6),BackgroundTransparency=1,
+                Text=e.displayName or e.name or "?",TextColor3=T.tx,Font=Enum.Font.GothamBold,TextSize=12,
+                TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd})
+            new("TextLabel",row,{Size=UDim2.new(0.55,0,0,14),Position=UDim2.new(0,44,0,24),BackgroundTransparency=1,
+                Text="@"..(e.name or "?").." · "..tostring(e.userId),TextColor3=T.txD,Font=Enum.Font.Gotham,TextSize=10,
+                TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd})
+            local rm=new("TextButton",row,{
+                Size=UDim2.new(0,56,0,24),Position=UDim2.new(1,-64,0.5,-12),
+                BackgroundColor3=T.ng,Text="Remove",TextColor3=Color3.fromRGB(255,255,255),
+                Font=Enum.Font.GothamBold,TextSize=10,BorderSizePixel=0
+            });corner(rm,5)
+            rm.MouseButton1Click:Connect(function()
+                S.hitlist[uid]=nil;saveHitlist();refreshHitlistUI()
+                showPopup("Hitlist","Removed",T.txM)
+            end)
+            y=y+48
+        end
+        if y<=4 then
+            new("TextLabel",hlListScroll,{Size=UDim2.new(1,-12,0,20),Position=UDim2.new(0,6,0,8),BackgroundTransparency=1,
+                Text="No priority targets yet",TextColor3=T.txD,Font=Enum.Font.Gotham,TextSize=11,
+                TextXAlignment=Enum.TextXAlignment.Left})
+            y=28
+        end
+        hlListScroll.CanvasSize=UDim2.new(0,0,0,y+6)
+    end
+    refreshHitlistUI()
 
     -- ScriptBlox search
     mkSL(s,Y,"Script Search (ScriptBlox)");Y=Y+SEC_H+GAP
@@ -6963,6 +8481,9 @@ function refreshArrayList()
         {"Anti-AFK",function() return S.antiAfkOn end},
         {"Click Mode",function() return S.clickOn end},
         {"Inf Jump",function() return S.infJOn end},
+        {"Bhop",function() return S.bhopOn end},
+        {"LagSwitch",function() return S.lagSwitchOn end},
+        {"SpinLock",function() return S.spinOn and S.spinClientLock end},
     }
     for _,c in ipairs(checks) do
         local ok,on=pcall(c[2])
@@ -7119,7 +8640,7 @@ do
         local pop=new("Frame",sg,{Size=UDim2.new(0,420,0,400),AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.new(0.5,0,0.5,0),
             BackgroundColor3=T.bg,BackgroundTransparency=0.1,BorderSizePixel=0,ZIndex=70})
         corner(pop,8);mkStroke(pop,T.ac,1.5)
-        new("TextLabel",pop,{Size=UDim2.new(1,0,0,28),Position=UDim2.new(0,0,0,10),BackgroundTransparency=1,Text="★ What's New in ChudHub v1",TextColor3=T.ac,Font=Enum.Font.GothamBold,TextSize=16,TextXAlignment=Enum.TextXAlignment.Center})
+        new("TextLabel",pop,{Size=UDim2.new(1,0,0,28),Position=UDim2.new(0,0,0,10),BackgroundTransparency=1,Text="★ What's New · "..CH_VERSION,TextColor3=T.ac,Font=Enum.Font.GothamBold,TextSize=16,TextXAlignment=Enum.TextXAlignment.Center})
 
         local content=new("ScrollingFrame",pop,{Size=UDim2.new(1,-24,1,-110),Position=UDim2.new(0,12,0,42),BackgroundTransparency=1,ScrollBarThickness=3,ScrollBarImageColor3=T.ac,CanvasSize=UDim2.new(0,0,0,0),BorderSizePixel=0})
         local cy=8
@@ -7127,18 +8648,18 @@ do
             new("TextLabel",content,{Size=UDim2.new(1,0,0,18),Position=UDim2.new(0,8,0,cy),BackgroundTransparency=1,Text=(bold and "• " or "  ")..txt,TextColor3=bold and T.ac or T.txM,Font=bold and Enum.Font.GothamBold or Enum.Font.Gotham,TextSize=11,TextXAlignment=Enum.TextXAlignment.Left})
             cy=cy+20
         end
-        addLine("Discord-style sidebar + themes / light mode",true)
-        addLine("Search bar shows live feature controls",true)
-        addLine("Alt palette with value setters (speed 50, fly 80)",true)
-        addLine("Custom keybinds (UI only bound by default)",true)
-        addLine("Pin features · config save/load",true)
-        addLine("Player tab: orbit, spectate, target HUD",true)
-        addLine("ESP: skeleton, head dots, avatars, radar, chams",true)
-        addLine("Target HUD / focus mode for ESP + aim + RPG",true)
-        addLine("World editor, performance mode, arraylist HUD",true)
-        addLine("User panel with avatars + player actions",true)
-        addLine("Exploit loader (IY, Dex, …)",true)
-        addLine("RPG patterns, streamproof, custom notifs",true)
+        addLine("ChudHub "..CH_VERSION,true)
+        addLine("Kill log + hitlist + join alerts",true)
+        addLine("Anti-RPG (health lock) + exploiter alerts",true)
+        addLine("Vehicle stealer / RPG grab until found",true)
+        addLine("Bhop snappy mode + speed/jump controls",true)
+        addLine("Skeleton ESP improved · ESP transparency",true)
+        addLine("Radar styles · streamer mode (WT boards)",true)
+        addLine("Menu materials (Acrylic/Glass/Mica/Liquid)",true)
+        addLine("Clock lock without flicker · soft character refresh",true)
+        addLine("Streamproof reparent · focus mode / target HUD",true)
+        addLine("Discord sidebar · themes · keybinds · pins",true)
+        addLine("RPG patterns, arraylist, performance mode",true)
         content.CanvasSize=UDim2.new(0,0,0,cy+10)
 
         -- Don't show again checkbox
@@ -7261,7 +8782,7 @@ UIS.InputEnded:Connect(function(inp)
     if inp.KeyCode==Enum.KeyCode.LeftControl then S.keys.Ctrl=false end
 end)
 
-do
+local function runSplash()
     local splash=new("Frame",sg,{
         Size=UDim2.new(0,340,0,400),
         AnchorPoint=Vector2.new(.5,.5),
@@ -7429,6 +8950,7 @@ do
             {Size=UDim2.new(0,WW,0,WH),BackgroundTransparency=0.18}):Play()
     end)
 end
+runSplash()
 
 do
     local ff=RepS:FindFirstChild("Freefall");if ff then ff:Destroy() end
