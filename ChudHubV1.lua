@@ -34,7 +34,7 @@ local TL={
 }
 local themeIdx=1
 local winTrans=18
-local reg={ac={},bg={},bS={},bT={},tx={},tM={},tD={},bd={},bc={},tr={},tog={},cards={}}
+local reg={ac={},bg={},bS={},bT={},tx={},tM={},tD={},bd={},bc={},tr={},tog={},cards={},accentLines={},ico={}}
 local TF=TweenInfo.new(0.12,Enum.EasingStyle.Quad,Enum.EasingDirection.Out)
 local TS2=TweenInfo.new(0.22,Enum.EasingStyle.Quad,Enum.EasingDirection.Out)
 local _winGradRef=nil
@@ -54,6 +54,34 @@ local function apTh(t)
         TwS:Create(card.s,TS2,{Color=sel and t.ac or t.bd,Thickness=sel and 2 or 1}):Play()
         card.n.TextColor3=sel and t.ac or t.tx
         if card.ic then card.ic.TextColor3=sel and t.ac or t.tD end
+    end
+
+    -- Theme gradients on registered frames / window
+        for _,ic in ipairs(reg.ico) do
+        if ic[1] and ic[1].Parent then
+            ic[1][ic[2]] = t.tM
+        end
+    end
+if _winGradRef and _winGradRef.Parent then
+        _winGradRef.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, t.bg),
+            ColorSequenceKeypoint.new(0.5, t.bS),
+            ColorSequenceKeypoint.new(1, Color3.new(math.min(1,t.bg.R*1.15), math.min(1,t.bg.G*1.15), math.min(1,t.bg.B*1.2)))
+        })
+    end
+    for _,card in ipairs(reg.cards) do
+        if card.f and card.f.Parent then
+            local g = card.f:FindFirstChildOfClass("UIGradient")
+            if not g then
+                g = Instance.new("UIGradient")
+                g.Rotation = 120
+                g.Parent = card.f
+            end
+            g.Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, t.bT),
+                ColorSequenceKeypoint.new(1, t.bS)
+            })
+        end
     end
 
 end
@@ -180,14 +208,26 @@ local S={
     silentAimBulletTP=false,
     silentAimShowTarget=false,
     silentAimFOVVisible=false,
+    silentAimMethod="Raycast",
+    silentAimMultiplyUnitBy=1,
+    silentAimCheckFireFunc=false,
+    silentAimBlockedMethods={},
+    silentAimTeamCheck=false,
+    silentAimInclude={},
+    silentAimShowTargetColor=Color3.fromRGB(54,57,241),
+    silentAimFOVColor=Color3.fromRGB(54,57,241),
     fovCircle=nil,
+    _saHighlight=nil,
+    fireMode="Auto",
+    nebulaThemeColor=Color3.fromRGB(173,216,230),
     hitSoundEnabled=true,
     hitSoundSelect="Neverlose",
     nebulaEnabled=false,
     lockedTime=12,
     fovEnabled=false,
     fovValue=70,
-    skyboxSelected="Game's Default Sky",
+    skyboxSelected="Game's Default",
+    hazeDensity=0.3,hazeStrength=0,hazeColor=Color3.fromRGB(199,199,199),
     tankSpamEnabled=false,
     shellsToFire=1,
     spamSpeed=1,
@@ -384,29 +424,79 @@ local function CHQueueSave()
 end
 
 
+-- ========== PasteWare Silent Aim core (functions unchanged) ==========
+local SilentAimSettings = {
+    Enabled = false,
+    ClassName = "PasteWare Silent Aim",
+    ToggleKey = "U",
+    TeamCheck = false,
+    TargetPart = "HumanoidRootPart",
+    SilentAimMethod = "Raycast",
+    FOVRadius = 130,
+    FOVVisible = false,
+    ShowSilentAimTarget = false,
+    HitChance = 100,
+    MultiplyUnitBy = 1,
+    BulletTP = false,
+    CheckForFireFunc = false,
+    BlockedMethods = {},
+    Include = {},
+    Origin = "Camera",
+    FOVColor = Color3.fromRGB(54, 57, 241),
+    TargetColor = Color3.fromRGB(54, 57, 241),
+    IgnoredPlayers = {},
+}
+getgenv().SilentAimSettings = SilentAimSettings
+
+local SA_Camera = workspace.CurrentCamera
+local SA_GetPlayers = Players.GetPlayers
+local SA_WorldToScreen = SA_Camera.WorldToScreenPoint
+local SA_WorldToViewportPoint = SA_Camera.WorldToViewportPoint
+local SA_FindFirstChild = game.FindFirstChild
+
+local ValidTargetParts = {"Head", "HumanoidRootPart"}
+
+local fov_circle
+pcall(function()
+    fov_circle = Drawing.new("Circle")
+    fov_circle.Thickness = 1
+    fov_circle.NumSides = 100
+    fov_circle.Radius = 130
+    fov_circle.Filled = false
+    fov_circle.Visible = false
+    fov_circle.ZIndex = 999
+    fov_circle.Transparency = 1
+    fov_circle.Color = SilentAimSettings.FOVColor
+end)
+S.fovCircle = fov_circle
+
 local ExpectedArguments = {
     ViewportPointToRay = { ArgCountRequired = 2, Args = { "number", "number" } },
     ScreenPointToRay = { ArgCountRequired = 2, Args = { "number", "number" } },
     Raycast = { ArgCountRequired = 3, Args = { "Instance", "Vector3", "Vector3", "RaycastParams" } },
-    FindPartOnRay = { ArgCountRequired = 2, Args = { "Ray", "Instance?", "boolean?", "boolean?" } },
-    FindPartOnRayWithIgnoreList = { ArgCountRequired = 2, Args = { "Ray", "table", "boolean?", "boolean?" } },
-    FindPartOnRayWithWhitelist = { ArgCountRequired = 2, Args = { "Ray", "table", "boolean?" } }
+    FindPartOnRay = { ArgCountRequired = 2, Args = { "Ray", "Instance", "boolean", "boolean" } },
+    FindPartOnRayWithIgnoreList = { ArgCountRequired = 3, Args = { "Ray", "table", "boolean", "boolean" } },
+    FindPartOnRayWithWhitelist = { ArgCountRequired = 3, Args = { "Ray", "table", "boolean", "boolean" } },
 }
 
-local function CalculateChance(Percentage)
-    Percentage = math.floor(Percentage or 100)
-    return (math.floor(Random.new():NextNumber(0, 1) * 100) / 100) <= (Percentage / 100)
+function CalculateChance(Percentage)
+    Percentage = math.floor(Percentage)
+    local chance = math.floor(Random.new().NextNumber(Random.new(), 0, 1) * 100) / 100
+    return chance <= Percentage / 100
+end
+
+local function getPositionOnScreen(Vector)
+    local Vec3, OnScreen = SA_WorldToScreen(SA_Camera, Vector)
+    return Vector2.new(Vec3.X, Vec3.Y), OnScreen
 end
 
 local function ValidateArguments(Args, RayMethod)
     local Matches = 0
-    if #Args < RayMethod.ArgCountRequired then return false end
+    if #Args < RayMethod.ArgCountRequired then
+        return false
+    end
     for Pos, Argument in next, Args do
-        local Expected = RayMethod.Args[Pos]
-        if not Expected then break end
-        local IsOptional = Expected:sub(-1) == "?"
-        local BaseType = IsOptional and Expected:sub(1, -2) or Expected
-        if typeof(Argument) == BaseType or (IsOptional and Argument == nil) then
+        if typeof(Argument) == RayMethod.Args[Pos] then
             Matches = Matches + 1
         end
     end
@@ -417,38 +507,40 @@ local function getDirection(Origin, Position)
     return (Position - Origin).Unit * 1000
 end
 
-local function isFocusTarget(p)
-    if not S.focusMode then return true end
-    local any=false
-    for _ in pairs(S.focusTargets) do any=true;break end
-    if not any then return true end
-    return p and S.focusTargets[p.Name]==true
-end
+local function getClosestPlayer()
+    if not SilentAimSettings.TargetPart then return end
+    local Camera = workspace.CurrentCamera
+    local Closest
+    local DistanceToMouse
+    local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    local ignoredPlayers = SilentAimSettings.IgnoredPlayers
 
-local function getSilentAimTarget()
-    if not (S.silentAimEnabled or S.aimbotEnabled) then return nil end
-    local Closest, bestDist = nil, math.huge
-    for _, Player in next, Players:GetPlayers() do
+    for _, Player in next, SA_GetPlayers(Players) do
         if Player == LocalPlayer then continue end
-        if S.wlist[Player.Name] then continue end
-        if not isFocusTarget(Player) then continue end
+        if ignoredPlayers and ignoredPlayers[Player.Name] then continue end
+        if SilentAimSettings.TeamCheck and Player.Team == LocalPlayer.Team then continue end
         local Character = Player.Character
         if not Character then continue end
-        local root = Character:FindFirstChild("HumanoidRootPart")
-        local hum2 = Character:FindFirstChildOfClass("Humanoid")
-        if not root or not hum2 or hum2.Health <= 0 then continue end
-        local sp, onScreen = workspace.CurrentCamera:WorldToViewportPoint(root.Position)
-        if not onScreen then continue end
-        local dist = (Vector2.new(Mouse.X, Mouse.Y) - Vector2.new(sp.X, sp.Y)).Magnitude
-        local fov = S.silentAimEnabled and (S.silentAimFOV or 200) or (S.aimbotFOV or 120)
-        if dist <= fov and dist < bestDist then
-            local partName = S.silentAimEnabled and (S.silentAimTargetPart or "HumanoidRootPart") or (S.aimbotPart or "Head")
-            Closest = Character:FindFirstChild(partName) or root
-            bestDist = dist
+        local HumanoidRootPart = SA_FindFirstChild(Character, "HumanoidRootPart")
+        local Humanoid = SA_FindFirstChild(Character, "Humanoid")
+        if not HumanoidRootPart or not Humanoid or Humanoid.Health <= 0 then continue end
+        local ScreenPosition, OnScreen = getPositionOnScreen(HumanoidRootPart.Position)
+        if not OnScreen then continue end
+        local Distance = (center - ScreenPosition).Magnitude
+        if Distance <= (DistanceToMouse or SilentAimSettings.FOVRadius or 2000) then
+            Closest = ((SilentAimSettings.TargetPart == "Random" and Character[ValidTargetParts[math.random(1, #ValidTargetParts)]]) or Character[SilentAimSettings.TargetPart])
+            DistanceToMouse = Distance
         end
     end
     return Closest
 end
+
+-- alias for other ChudHub features that still call getSilentAimTarget
+local function getSilentAimTarget()
+    return getClosestPlayer()
+end
+
+
 
 local function getBodyPart(character, partName)
     return character:FindFirstChild(partName) and partName or "Head"
@@ -483,24 +575,27 @@ local function toggleLockOnPlayer()
     end
 end
 
--- Desync Heartbeat (raw)
+-- Desync Heartbeat (PasteWare pure reverse-resolve)
 game:GetService("RunService").Heartbeat:Connect(function()
-    if S.desyncEnabled and S.desync then
-        local ch = LocalPlayer.Character
-        local r = ch and ch:FindFirstChild("HumanoidRootPart")
-        if r then
-            local intens = S.reverseResolveIntensity or 5
-            -- offset clone-style desync without yielding
-            pcall(function()
-                r.CFrame = r.CFrame * CFrame.new(0, 0, intens * 0.05 * (math.random()<0.5 and -1 or 1))
-                r.AssemblyLinearVelocity = r.AssemblyLinearVelocity + Vector3.new(
-                    (math.random()-0.5)*intens*40,
-                    (math.random()-0.5)*intens*10,
-                    (math.random()-0.5)*intens*40
-                )
-            end)
-        end
-    end
+    if not (S.desyncEnabled and S.desync) then return end
+    local ch = LocalPlayer.Character
+    local r = ch and ch:FindFirstChild("HumanoidRootPart")
+    if not r then return end
+    local intens = S.reverseResolveIntensity or 5
+    local originalVelocity = r.Velocity
+    local randomOffset = Vector3.new(
+        math.random(-1, 1) * intens * 1000,
+        math.random(-1, 1) * intens * 1000,
+        math.random(-1, 1) * intens * 1000
+    )
+    pcall(function()
+        r.Velocity = randomOffset
+        r.CFrame = r.CFrame * CFrame.Angles(0, math.random(-1, 1) * intens * 0.001, 0)
+    end)
+    game:GetService("RunService").RenderStepped:Wait()
+    pcall(function()
+        r.Velocity = originalVelocity
+    end)
 end)
 
 -- Aimbot / AimLock RenderStepped
@@ -803,30 +898,137 @@ local function modifyAllVehicleSettings()
     end
 end
 
--- Silent Aim hook (raw core)
+-- PasteWare namecall hook (logic unchanged from working PW script)
+local previousHighlight = nil
+local function removeOldHighlight()
+    if previousHighlight then
+        pcall(function() previousHighlight:Destroy() end)
+        previousHighlight = nil
+    end
+end
+
+RS.RenderStepped:Connect(function()
+    SA_Camera = workspace.CurrentCamera
+    if SilentAimSettings.ShowSilentAimTarget then
+        local closestPlayer = getClosestPlayer()
+        if closestPlayer then
+            local Root = closestPlayer.Parent and (closestPlayer.Parent.PrimaryPart or closestPlayer) or closestPlayer
+            local _, IsOnScreen = SA_WorldToViewportPoint(SA_Camera, Root.Position)
+            removeOldHighlight()
+            if IsOnScreen and closestPlayer.Parent then
+                local highlight = closestPlayer.Parent:FindFirstChildOfClass("Highlight")
+                if not highlight then
+                    highlight = Instance.new("Highlight")
+                    highlight.Parent = closestPlayer.Parent
+                    highlight.Adornee = closestPlayer.Parent
+                end
+                highlight.FillColor = SilentAimSettings.TargetColor
+                highlight.FillTransparency = 0.5
+                highlight.OutlineColor = SilentAimSettings.TargetColor
+                highlight.OutlineTransparency = 0
+                previousHighlight = highlight
+            end
+        else
+            removeOldHighlight()
+        end
+    else
+        removeOldHighlight()
+    end
+
+    if fov_circle then
+        if SilentAimSettings.FOVVisible then
+            fov_circle.Visible = true
+            fov_circle.Color = SilentAimSettings.FOVColor
+            fov_circle.Radius = SilentAimSettings.FOVRadius
+            fov_circle.Position = Vector2.new(SA_Camera.ViewportSize.X / 2, SA_Camera.ViewportSize.Y / 2)
+        else
+            fov_circle.Visible = false
+        end
+    end
+end)
+
 local oldNamecall
 oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(...)
-    if not S.silentAimEnabled then return oldNamecall(...) end
-    local Method, Args = getnamecallmethod(), {...}
-    local self = Args[1]
-    if CalculateChance(S.silentAimHitChance or 100) then
-        local hit = getSilentAimTarget()
-        if hit then
-            if Method == "Raycast" and ValidateArguments(Args, ExpectedArguments.Raycast) then
-                local o, d = getDirection(Args[2], hit.Position)
-                Args[2], Args[3] = o, d * (S.silentAimMultiplyUnitBy or 1)
-                return oldNamecall(unpack(Args))
-            elseif (Method == "FindPartOnRay" or Method == "FindPartOnRayWithIgnoreList") and ValidateArguments(Args, ExpectedArguments.FindPartOnRayWithIgnoreList) then
-                local o, d = getDirection(Args[2].Origin, hit.Position)
-                Args[2] = Ray.new(o, d * (S.silentAimMultiplyUnitBy or 1))
-                return oldNamecall(unpack(Args))
+    local Method, Arguments = getnamecallmethod(), {...}
+    local self, chance = Arguments[1], CalculateChance(SilentAimSettings.HitChance)
+
+    local BlockedMethods = SilentAimSettings.BlockedMethods or {}
+    if type(BlockedMethods) == "table" then
+        if BlockedMethods[Method] then return end
+        for _, m in pairs(BlockedMethods) do
+            if m == Method then return end
+        end
+    end
+
+    if SilentAimSettings.CheckForFireFunc and (Method == "FindPartOnRay" or Method == "FindPartOnRayWithWhitelist" or Method == "FindPartOnRayWithIgnoreList" or Method == "Raycast" or Method == "ViewportPointToRay" or Method == "ScreenPointToRay") then
+        local Traceback = tostring(debug.traceback()):lower()
+        if not (Traceback:find("bullet") or Traceback:find("gun") or Traceback:find("fire")) then
+            return oldNamecall(...)
+        end
+    end
+
+    if SilentAimSettings.Enabled and self == workspace and not checkcaller() and chance then
+        local HitPart = getClosestPlayer()
+        if HitPart then
+            local function modifyRay(Origin)
+                if SilentAimSettings.BulletTP then
+                    Origin = (HitPart.CFrame * CFrame.new(0, 0, 1)).p
+                end
+                return Origin, getDirection(Origin, HitPart.Position)
+            end
+
+            local methodWanted = SilentAimSettings.SilentAimMethod
+
+            if Method == "FindPartOnRayWithIgnoreList" and methodWanted == Method then
+                if ValidateArguments(Arguments, ExpectedArguments.FindPartOnRayWithIgnoreList) then
+                    local Origin, Direction = modifyRay(Arguments[2].Origin)
+                    Arguments[2] = Ray.new(Origin, Direction * SilentAimSettings.MultiplyUnitBy)
+                    return oldNamecall(unpack(Arguments))
+                end
+            elseif Method == "FindPartOnRayWithWhitelist" and methodWanted == Method then
+                if ValidateArguments(Arguments, ExpectedArguments.FindPartOnRayWithWhitelist) then
+                    local Origin, Direction = modifyRay(Arguments[2].Origin)
+                    Arguments[2] = Ray.new(Origin, Direction * SilentAimSettings.MultiplyUnitBy)
+                    return oldNamecall(unpack(Arguments))
+                end
+            elseif (Method == "FindPartOnRay" or Method == "findPartOnRay") and methodWanted:lower() == Method:lower() then
+                if ValidateArguments(Arguments, ExpectedArguments.FindPartOnRay) then
+                    local Origin, Direction = modifyRay(Arguments[2].Origin)
+                    Arguments[2] = Ray.new(Origin, Direction * SilentAimSettings.MultiplyUnitBy)
+                    return oldNamecall(unpack(Arguments))
+                end
+            elseif Method == "Raycast" and methodWanted == Method then
+                if ValidateArguments(Arguments, ExpectedArguments.Raycast) then
+                    local Origin, Direction = modifyRay(Arguments[2])
+                    Arguments[2], Arguments[3] = Origin, Direction * SilentAimSettings.MultiplyUnitBy
+                    return oldNamecall(unpack(Arguments))
+                end
+            elseif Method == "ViewportPointToRay" and methodWanted == Method then
+                if ValidateArguments(Arguments, ExpectedArguments.ViewportPointToRay) then
+                    local Origin = SA_Camera.CFrame.p
+                    if SilentAimSettings.BulletTP then
+                        Origin = (HitPart.CFrame * CFrame.new(0, 0, 1)).p
+                    end
+                    return Ray.new(Origin, (HitPart.Position - Origin).Unit * SilentAimSettings.MultiplyUnitBy)
+                end
+            elseif Method == "ScreenPointToRay" and methodWanted == Method then
+                if ValidateArguments(Arguments, ExpectedArguments.ScreenPointToRay) then
+                    local Origin = SA_Camera.CFrame.p
+                    if SilentAimSettings.BulletTP then
+                        Origin = (HitPart.CFrame * CFrame.new(0, 0, 1)).p
+                    end
+                    return Ray.new(Origin, (HitPart.Position - Origin).Unit * SilentAimSettings.MultiplyUnitBy)
+                end
             end
         end
     end
+
     return oldNamecall(...)
 end))
 
-print("[ChudHub] PasteWare raw non-visual features integrated successfully.")
+
+
+print("[ChudHub] PasteWare silent aim + desync integrated.")
 
 local VWS={"Gunship Workspace","Vehicle Workspace","Tank Workspace","Submarine Workspace",
     "Rc Workspace","Helicopter Workspace","Hovercraft Workspace","Drone Workspace","Plane Workspace","Boat Workspace"}
@@ -834,6 +1036,19 @@ local VRN={"HumanoidRootPart","Main","Seat","VehicleSeat","DriveSeat","Body","Hu
 local NORMS={[Enum.NormalId.Top]=Vector3.new(0,1,0),[Enum.NormalId.Bottom]=Vector3.new(0,-1,0),
     [Enum.NormalId.Front]=Vector3.new(0,0,-1),[Enum.NormalId.Back]=Vector3.new(0,0,1),
     [Enum.NormalId.Left]=Vector3.new(-1,0,0),[Enum.NormalId.Right]=Vector3.new(1,0,0)}
+
+-- focus mode filter (was missing — broke updateESP)
+local function isFocusTarget(p)
+    if not p then return false end
+    if not S.focusMode then return true end
+    local ft = S.focusTargets
+    if type(ft) ~= "table" then return true end
+    -- empty focus list = treat everyone as valid
+    local any = false
+    for _ in pairs(ft) do any = true break end
+    if not any then return true end
+    return ft[p.Name] == true or ft[tostring(p.UserId)] == true
+end
 
 local function isIgnoredName(n) return S.wlist[n]==true end
 local function isIgnored(p)
@@ -2258,6 +2473,29 @@ local function applyBright(en)
         if not S.fogOn then Li.FogEnd=S.origLi.FogEnd;Li.FogStart=S.origLi.FogStart;for o,orig in pairs(S.origAtm) do if o and o.Parent then o.Density=orig.Density;o.Haze=orig.Haze end end;S.origAtm={} end
     end
 end
+local function ensureAtmosphere()
+    local a = Li:FindFirstChildOfClass("Atmosphere")
+    if not a then
+        a = Instance.new("Atmosphere")
+        a.Parent = Li
+        a.Density = 0.3
+        a.Haze = 0
+        a.Color = Color3.fromRGB(199, 199, 199)
+        a.Decay = Color3.fromRGB(92, 92, 92)
+        a.Glare = 0
+        a.Offset = 0
+    end
+    return a
+end
+
+local function applyHaze(density, haze, color)
+    local a = ensureAtmosphere()
+    if density ~= nil then a.Density = density end
+    if haze ~= nil then a.Haze = haze end
+    if color ~= nil then a.Color = color end
+    return a
+end
+
 local function applyFog(en)
     if en then Li.FogEnd=1e5;Li.FogStart=0
         for _,src in ipairs({Li:GetChildren(),workspace.Terrain:GetChildren()}) do for _,o in ipairs(src) do if o:IsA("Atmosphere") then if not S.origAtm[o] then S.origAtm[o]={Density=o.Density,Haze=o.Haze} end;o.Density=0;o.Haze=0 end end end
@@ -3096,6 +3334,17 @@ local win=new("Frame",sg,{
     BorderSizePixel=0,Visible=false
 });corner(win,14);win.ClipsDescendants=true
 ra("bg",win,"BackgroundColor3")
+do
+    local g=Instance.new("UIGradient")
+    g.Rotation=145
+    g.Color=ColorSequence.new({
+        ColorSequenceKeypoint.new(0,T.bg),
+        ColorSequenceKeypoint.new(0.55,T.bgS),
+        ColorSequenceKeypoint.new(1,T.bgT)
+    })
+    g.Parent=win
+    _winGradRef=g
+end
 local winWrap=win
 
 local winStroke=new("UIStroke",win,{Thickness=0.5,Color=T.bd,Transparency=0.5})
@@ -3878,7 +4127,7 @@ local userLbl=new("TextLabel",userBtn,{
     Size=UDim2.new(1,-44,1,0),Position=UDim2.new(0,40,0,0),BackgroundTransparency=1,
     Text="User",TextColor3=T.txM,Font=Enum.Font.Gotham,TextSize=12,
     TextXAlignment=Enum.TextXAlignment.Left,ZIndex=7
-})
+});ra("tM",userLbl,"TextColor3")
 local toggleUserPanel=nil
 userBtn.MouseButton1Click:Connect(function()
     playSFX("click")
@@ -3901,7 +4150,11 @@ local lightLbl=new("TextLabel",lightBtn,{
     Size=UDim2.new(1,-44,1,0),Position=UDim2.new(0,40,0,0),BackgroundTransparency=1,
     Text="Light Mode",TextColor3=T.txM,Font=Enum.Font.Gotham,TextSize=12,
     TextXAlignment=Enum.TextXAlignment.Left,ZIndex=7
-})
+});ra("tM",lightLbl,"TextColor3")
+if lightIco and lightIco:IsA("ImageLabel") then
+    table.insert(reg.ico,{lightIco,"ImageColor3"})
+    lightIco.ImageColor3=T.txM
+end
 local function applyLightMode(en)
     S.lightMode=en
     if en then
@@ -3920,6 +4173,9 @@ local function applyLightMode(en)
     for _,r in ipairs(reg.bT) do if r[1] and r[1].Parent then r[1][r[2]]=T.bgT end end
     for _,r in ipairs(reg.tx) do if r[1] and r[1].Parent then r[1][r[2]]=T.tx end end
     for _,r in ipairs(reg.tM) do if r[1] and r[1].Parent then r[1][r[2]]=T.txM end end
+    for _,ic in ipairs(reg.ico) do if ic[1] and ic[1].Parent then ic[1][ic[2]]=T.txM end end
+    if lightLbl and lightLbl.Parent then lightLbl.TextColor3=T.txM end
+    if userLbl and userLbl.Parent then userLbl.TextColor3=T.txM end
     for _,r in ipairs(reg.tD) do if r[1] and r[1].Parent then r[1][r[2]]=T.txD end end
     for _,s in ipairs(reg.bd) do if s and s.Parent then s.Color=T.bd end end
     if lightIco:IsA("ImageLabel") then lightIco.ImageColor3=T.wn end
@@ -4700,6 +4956,28 @@ local function mkSL(par,y,txt)
     local l=new("TextLabel",r,{Size=UDim2.new(1,0,0,16),BackgroundTransparency=1,Text=txt:upper(),
         TextColor3=T.txM,Font=Enum.Font.GothamBold,TextSize=10,
         TextXAlignment=Enum.TextXAlignment.Left});ra("tM",l,"TextColor3")
+    -- accent gradient underline wave
+    local und=new("Frame",r,{Size=UDim2.new(0,0,0,2),Position=UDim2.new(0,0,0,18),BackgroundColor3=T.ac,BorderSizePixel=0})
+    corner(und,1)
+    table.insert(reg.accentLines,und)
+    local ug=Instance.new("UIGradient")
+    ug.Color=ColorSequence.new({
+        ColorSequenceKeypoint.new(0,T.ac),
+        ColorSequenceKeypoint.new(0.5,Color3.new(1,1,1)),
+        ColorSequenceKeypoint.new(1,T.ac)
+    })
+    ug.Parent=und
+    task.defer(function()
+        TwS:Create(und,TweenInfo.new(0.45,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),{Size=UDim2.new(0.35,0,0,2)}):Play()
+    end)
+    r.MouseEnter:Connect(function()
+        TwS:Create(l,TweenInfo.new(0.2),{TextColor3=T.ac}):Play()
+        TwS:Create(und,TweenInfo.new(0.25,Enum.EasingStyle.Quad),{Size=UDim2.new(0.55,0,0,2)}):Play()
+    end)
+    r.MouseLeave:Connect(function()
+        TwS:Create(l,TweenInfo.new(0.2),{TextColor3=T.txM}):Play()
+        TwS:Create(und,TweenInfo.new(0.25),{Size=UDim2.new(0.35,0,0,2)}):Play()
+    end)
     local sep=new("Frame",r,{Size=UDim2.new(1,0,0,1),Position=UDim2.new(0,0,1,-1),
         BackgroundColor3=T.bd,BackgroundTransparency=0.55,BorderSizePixel=0});ra("bc",sep,"BackgroundColor3")
     return r
@@ -4843,6 +5121,25 @@ local function mkTog(par,y,cfg)
     new("TextButton",tf,{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text=""}).MouseButton1Click:Connect(function() upd(not en) end)
     local clicker=new("TextButton",c,{Size=UDim2.new(1,-108,1,0),BackgroundTransparency=1,Text="",ZIndex=3})
     clicker.MouseButton1Click:Connect(function() upd(not en) end)
+    -- hover / press reactivity
+    local st0=c:FindFirstChildOfClass("UIStroke")
+    c.MouseEnter:Connect(function()
+        TwS:Create(c,TweenInfo.new(0.12),{BackgroundTransparency=0}):Play()
+        if st0 then TwS:Create(st0,TweenInfo.new(0.12),{Color=T.ac,Transparency=0.2}):Play() end
+        TwS:Create(l,TweenInfo.new(0.15),{TextColor3=T.ac}):Play()
+        pcall(function() playSFX("hover",0.06) end)
+    end)
+    c.MouseLeave:Connect(function()
+        TwS:Create(c,TweenInfo.new(0.12),{BackgroundTransparency=0.12}):Play()
+        if st0 then TwS:Create(st0,TweenInfo.new(0.12),{Color=T.bd,Transparency=0}):Play() end
+        TwS:Create(l,TweenInfo.new(0.15),{TextColor3=T.tx}):Play()
+    end)
+    clicker.MouseButton1Down:Connect(function()
+        TwS:Create(c,TweenInfo.new(0.06),{BackgroundTransparency=0.25}):Play()
+    end)
+    clicker.MouseButton1Up:Connect(function()
+        TwS:Create(c,TweenInfo.new(0.08),{BackgroundTransparency=0}):Play()
+    end)
     upd(cfg.default,true)
     regFeature({label=baseLabel,frame=c,kind="toggle",set=upd,get=function() return en end,bindKey=cfg.bindKey,refreshLabel=refreshLabel,togRef=togRef})
     return{t=c,u=upd,label=l,refreshLabel=refreshLabel,get=function() return en end}
@@ -4898,51 +5195,86 @@ end
 
 -- Proper dropdown (replaces cycling button lists)
 local function mkDropdown(par,y,label,options,default,onChange)
-    local wrap=new("Frame",par,{Size=UDim2.new(1,-PAD*2,0,52),Position=UDim2.new(0,PAD,0,y),BackgroundTransparency=1})
+    local wrap=new("Frame",par,{Size=UDim2.new(1,-PAD*2,0,52),Position=UDim2.new(0,PAD,0,y),BackgroundTransparency=1,ZIndex=5})
     new("TextLabel",wrap,{Size=UDim2.new(1,0,0,14),Position=UDim2.new(0,0,0,0),BackgroundTransparency=1,
         Text=label,TextColor3=T.txM,Font=Enum.Font.Gotham,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left})
     local idx=1
     for i,o in ipairs(options) do if o==default then idx=i break end end
-    local btn=new("TextButton",wrap,{
-        Size=UDim2.new(1,0,0,30),Position=UDim2.new(0,0,0,16),
-        BackgroundColor3=T.bgT,TextColor3=T.tx,Font=Enum.Font.Gotham,TextSize=12,
-        Text=options[idx] or "?",BorderSizePixel=0,TextXAlignment=Enum.TextXAlignment.Left
-    });corner(btn,CORNER);mkStroke(btn,T.bd)
-    new("UIPadding",btn,{PaddingLeft=UDim.new(0,10),PaddingRight=UDim.new(0,28)})
+    local btn=new("TextButton",par,{
+        Size=UDim2.new(1,-PAD*2,0,32),Position=UDim2.new(0,PAD,0,y+16),
+        BackgroundColor3=T.bgT,TextColor3=T.tx,Font=Enum.Font.GothamMedium,TextSize=12,
+        Text=options[idx] or "?",BorderSizePixel=0,TextXAlignment=Enum.TextXAlignment.Left,
+        AutoButtonColor=false,ZIndex=6,Active=true
+    });corner(btn,CORNER)
+    local bst=mkStroke(btn,T.bd,1)
+    new("UIPadding",btn,{PaddingLeft=UDim.new(0,12),PaddingRight=UDim.new(0,30)})
     ra("bT",btn,"BackgroundColor3");ra("tx",btn,"TextColor3")
-    -- Lucide chevron instead of broken ▾ glyph
     local chev=mkIcon(btn,"chevron-down",14,{
-        Position=UDim2.new(1,-22,0.5,-7),ImageColor3=T.txM,ZIndex=3
+        Position=UDim2.new(1,-22,0.5,-7),ImageColor3=T.txM,ZIndex=7
     })
+    btn.MouseEnter:Connect(function()
+        TwS:Create(btn,TweenInfo.new(0.12),{BackgroundColor3=T.bgS}):Play()
+        if bst then TwS:Create(bst,TweenInfo.new(0.12),{Color=T.ac}):Play() end
+    end)
+    btn.MouseLeave:Connect(function()
+        TwS:Create(btn,TweenInfo.new(0.12),{BackgroundColor3=T.bgT}):Play()
+        if bst then TwS:Create(bst,TweenInfo.new(0.12),{Color=T.bd}):Play() end
+    end)
     local open=false
     local menu=nil
+    local awayConn=nil
     local function closeMenu()
         open=false
+        if awayConn then awayConn:Disconnect();awayConn=nil end
         if menu then menu:Destroy();menu=nil end
-        if chev then
-            if chev:IsA("ImageLabel") then chev.Rotation=0
-            elseif chev:IsA("GuiObject") then chev.Rotation=0 end
+        if chev and chev:IsA("GuiObject") then
+            pcall(function() TwS:Create(chev,TweenInfo.new(0.15),{Rotation=0}):Play() end)
         end
     end
     btn.MouseButton1Click:Connect(function()
         playSFX("click",0.2)
         if open then closeMenu();return end
         open=true
-        if chev and chev:IsA("GuiObject") then chev.Rotation=180 end
-        local h=math.min(#options*28+8,160)
-        menu=new("ScrollingFrame",par,{
-            Size=UDim2.new(1,-PAD*2,0,h),Position=UDim2.new(0,PAD,0,y+50),
-            BackgroundColor3=T.bgS,BorderSizePixel=0,ZIndex=50,
-            ScrollBarThickness=3,ScrollBarImageColor3=T.ac,CanvasSize=UDim2.new(0,0,0,#options*28+4)
-        });corner(menu,CORNER);mkStroke(menu,T.ac,1)
+        if chev and chev:IsA("GuiObject") then
+            pcall(function() TwS:Create(chev,TweenInfo.new(0.15),{Rotation=180}):Play() end)
+        end
+        local itemH=28
+        local maxH=math.min(#options*itemH+10, 200)
+        local abs=btn.AbsolutePosition
+        local abss=btn.AbsoluteSize
+        local inset=Vector2.new(0,0)
+        pcall(function() inset=game:GetService("GuiService"):GetGuiInset() end)
+        -- AbsolutePosition is inset-aware for ScreenGui; mouse is not — normalize
+        local host=sg
+        local screenH=(workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize.Y) or 600
+        local openUp=(abs.Y+abss.Y+maxH+12) > (screenH-24)
+        local menuY=openUp and (abs.Y-maxH-4) or (abs.Y+abss.Y+4)
+        menu=new("ScrollingFrame",host,{
+            Size=UDim2.new(0,math.max(abss.X,120),0,maxH),
+            Position=UDim2.new(0,abs.X,0,menuY),
+            BackgroundColor3=T.bg,BorderSizePixel=0,ZIndex=1000,
+            ScrollBarThickness=3,ScrollBarImageColor3=T.ac,
+            CanvasSize=UDim2.new(0,0,0,#options*itemH+8),
+            ClipsDescendants=true,Active=true,Selectable=true
+        });corner(menu,8)
+        mkStroke(menu,T.ac,1.2)
         for i,opt in ipairs(options) do
+            local selected=(i==idx)
             local row=new("TextButton",menu,{
-                Size=UDim2.new(1,-8,0,26),Position=UDim2.new(0,4,0,4+(i-1)*28),
-                BackgroundColor3=(i==idx) and T.ac or T.bgT,BackgroundTransparency=(i==idx) and 0.15 or 0.4,
-                Text=opt,TextColor3=T.tx,Font=Enum.Font.Gotham,TextSize=12,BorderSizePixel=0,ZIndex=51,
-                TextXAlignment=Enum.TextXAlignment.Left
-            });corner(row,4)
-            new("UIPadding",row,{PaddingLeft=UDim.new(0,8)})
+                Size=UDim2.new(1,-10,0,itemH-2),Position=UDim2.new(0,5,0,5+(i-1)*itemH),
+                BackgroundColor3=selected and T.ac or T.bgT,
+                BackgroundTransparency=selected and 0.3 or 0.45,
+                Text=opt,TextColor3=T.tx,
+                Font=Enum.Font.Gotham,TextSize=12,BorderSizePixel=0,ZIndex=1001,
+                TextXAlignment=Enum.TextXAlignment.Left,AutoButtonColor=false,Active=true
+            });corner(row,5)
+            new("UIPadding",row,{PaddingLeft=UDim.new(0,10)})
+            row.MouseEnter:Connect(function()
+                if i~=idx then row.BackgroundTransparency=0.2; row.BackgroundColor3=T.bgS end
+            end)
+            row.MouseLeave:Connect(function()
+                if i~=idx then row.BackgroundTransparency=0.45; row.BackgroundColor3=T.bgT end
+            end)
             row.MouseButton1Click:Connect(function()
                 idx=i
                 btn.Text=opt
@@ -4951,6 +5283,24 @@ local function mkDropdown(par,y,label,options,default,onChange)
                 if onChange then onChange(opt,i) end
             end)
         end
+        -- delayed click-away so the open click doesn't immediately close
+        task.delay(0.25, function()
+            if not open then return end
+            awayConn=UIS.InputBegan:Connect(function(inp)
+                if not open or not menu or not menu.Parent then return end
+                if inp.UserInputType~=Enum.UserInputType.MouseButton1 then return end
+                local m=UIS:GetMouseLocation()
+                local inset=Vector2.zero
+                pcall(function() inset=game:GetService("GuiService"):GetGuiInset() end)
+                local mx,my=m.X-inset.X,m.Y-inset.Y
+                local function inside(gui)
+                    if not gui then return false end
+                    local p,s=gui.AbsolutePosition,gui.AbsoluteSize
+                    return mx>=p.X and mx<=p.X+s.X and my>=p.Y and my<=p.Y+s.Y
+                end
+                if not inside(menu) and not inside(btn) then closeMenu() end
+            end)
+        end)
     end)
     regFeature({label=label,frame=wrap,kind="dropdown"})
     return wrap,function() return options[idx] end,function(v)
@@ -4986,8 +5336,8 @@ local function mkInputSet(par,y,placeholder,defaultText,onSet)
     return wrap,box
 end
 
-local tabs={"Move","Weapon","RPG","Vis","Player","Vehicle","Misc","Online","Layout"}
-local tabIcons={Move=ICO.Move,Weapon=ICO.Weapon,RPG=ICO.RPG,Vis=ICO.Vis,Player=ICO.Player,Vehicle="settings-2",Misc=ICO.Misc,Online="globe",Layout=ICO.Layout}
+local tabs={"Move","Weapon","RPG","Vis","World","Player","Vehicle","Misc","Online","Layout"}
+local tabIcons={Move=ICO.Move,Weapon=ICO.Weapon,RPG=ICO.RPG,Vis=ICO.Vis,World="globe-2",Player=ICO.Player,Vehicle="settings-2",Misc=ICO.Misc,Online="globe",Layout=ICO.Layout}
 -- tabC already declared earlier
 local curTab=nil
 local tabW=mfl((WW-PAD*2-6)/#tabs)
@@ -5028,10 +5378,19 @@ for idx,name in ipairs(tabs) do
         TextXAlignment=Enum.TextXAlignment.Left,ZIndex=2
     });ra("tD",sLbl,"TextColor3")
     sideBtn.MouseEnter:Connect(function()
-        if curTab~=name then TwS:Create(sBg,TweenInfo.new(0.1),{BackgroundTransparency=0.7}):Play() end
+        if curTab~=name then
+            sBg.BackgroundColor3=T.ac
+            TwS:Create(sBg,TweenInfo.new(0.12),{BackgroundTransparency=0.82}):Play()
+            setIcoColor(T.ac)
+            TwS:Create(sLbl,TweenInfo.new(0.12),{TextColor3=T.ac}):Play()
+        end
     end)
     sideBtn.MouseLeave:Connect(function()
-        if curTab~=name then TwS:Create(sBg,TweenInfo.new(0.1),{BackgroundTransparency=1}):Play() end
+        if curTab~=name then
+            TwS:Create(sBg,TweenInfo.new(0.12),{BackgroundTransparency=1}):Play()
+            setIcoColor(T.txD)
+            TwS:Create(sLbl,TweenInfo.new(0.12),{TextColor3=T.txD}):Play()
+        end
     end)
 
     local scroll=new("ScrollingFrame",ca2,{
@@ -5595,18 +5954,71 @@ local function buildWeapon()
     mkBtn(s,Y,"Toggle Lock On Nearest",function() toggleLockOnPlayer();showPopup("Aim Lock",S.isLockedOn and "Locked" or "Unlocked",T.ac) end);Y=Y+TOG_H+GAP
 
 
-    -- Resolver
+    -- ========== Silent Aim (PasteWare — exact core, ChudHub UI) ==========
+    mkSL(s, Y, "Silent Aim"); Y = Y + SEC_H + GAP
+    mkTog(s, Y, {label="Enable Silent Aim", default=false, color=T.ac, cb=function(en)
+        SilentAimSettings.Enabled = en
+        S.silentAimEnabled = en
+        if fov_circle then fov_circle.Visible = en and SilentAimSettings.FOVVisible end
+        showToggleNotif("Silent Aim", en)
+    end}); Y = Y + TOG_H + GAP
+    mkTog(s, Y, {label="Team Check", default=false, color=T.ac, cb=function(en)
+        SilentAimSettings.TeamCheck = en
+        S.silentAimTeamCheck = en
+    end}); Y = Y + TOG_H + GAP
+    mkTog(s, Y, {label="Bullet Teleport", default=false, color=T.ac, cb=function(en)
+        SilentAimSettings.BulletTP = en
+        S.silentAimBulletTP = en
+    end}); Y = Y + TOG_H + GAP
+    mkTog(s, Y, {label="Check For Fire Function", default=false, color=T.ac, cb=function(en)
+        SilentAimSettings.CheckForFireFunc = en
+        S.silentAimCheckFireFunc = en
+    end}); Y = Y + TOG_H + GAP
+    mkDropdown(s, Y, "Target Part", {"Head","HumanoidRootPart","Random"}, SilentAimSettings.TargetPart or "HumanoidRootPart", function(v)
+        SilentAimSettings.TargetPart = v
+        S.silentAimTargetPart = v
+    end); Y = Y + 56 + GAP
+    mkDropdown(s, Y, "Silent Aim Method", {
+        "Raycast","FindPartOnRay","FindPartOnRayWithIgnoreList","FindPartOnRayWithWhitelist","ViewportPointToRay","ScreenPointToRay"
+    }, SilentAimSettings.SilentAimMethod or "Raycast", function(v)
+        SilentAimSettings.SilentAimMethod = v
+        S.silentAimMethod = v
+    end); Y = Y + 56 + GAP
+    mkSl(s, Y, {label="FOV Radius", min=0, max=360, default=SilentAimSettings.FOVRadius or 130, cb=function(v)
+        SilentAimSettings.FOVRadius = mfl(v)
+        S.silentAimFOV = SilentAimSettings.FOVRadius
+        if fov_circle then fov_circle.Radius = SilentAimSettings.FOVRadius end
+    end}); Y = Y + SL_H + GAP
+    mkSl(s, Y, {label="Hit Chance", min=0, max=100, default=SilentAimSettings.HitChance or 100, suffix="%", cb=function(v)
+        SilentAimSettings.HitChance = mfl(v)
+        S.silentAimHitChance = SilentAimSettings.HitChance
+    end}); Y = Y + SL_H + GAP
+    mkSl(s, Y, {label="Multiply Unit By", min=0.1, max=10, default=SilentAimSettings.MultiplyUnitBy or 1, rounding=1, cb=function(v)
+        SilentAimSettings.MultiplyUnitBy = v
+        S.silentAimMultiplyUnitBy = v
+    end}); Y = Y + SL_H + GAP
+    mkTog(s, Y, {label="Show FOV Circle", default=false, color=T.ac, cb=function(en)
+        SilentAimSettings.FOVVisible = en
+        S.silentAimFOVVisible = en
+        if fov_circle then fov_circle.Visible = en and SilentAimSettings.Enabled end
+    end}); Y = Y + TOG_H + GAP
+    mkTog(s, Y, {label="Show Silent Aim Target", default=false, color=T.ac, cb=function(en)
+        SilentAimSettings.ShowSilentAimTarget = en
+        S.silentAimShowTarget = en
+        if not en then removeOldHighlight() end
+    end}); Y = Y + TOG_H + GAP
+
+    -- ========== Resolver ==========
+    mkSL(s, Y, "Anti-Lock Resolver"); Y = Y + SEC_H + GAP
     mkTog(s, Y, {label="Anti-Lock Resolver", default=false, color=T.ac, cb=function(v) S.antiLockEnabled = v end}); Y = Y + TOG_H + GAP
     mkSl(s, Y, {label="Resolver Intensity", min=0, max=5, default=1, rounding=1, cb=function(v) S.resolverIntensity = v end}); Y = Y + SL_H + GAP
-
     mkDropdown(s, Y, "Resolver Method", {"Recalculate","Randomize","Invert"}, S.resolverMethod or "Recalculate", function(v) S.resolverMethod=v end); Y=Y+56+GAP
 
-    -- Desync
+    -- ========== Desync (PasteWare pure) ==========
     mkSL(s, Y, "Desync / Anti-Lock"); Y = Y + SEC_H + GAP
     mkTog(s, Y, {label="Enable Desync", default=false, color=T.ac, cb=function(v) S.desyncEnabled = v end}); Y = Y + TOG_H + GAP
-    mkTog(s, Y, {label="Desync Keybind (V)", default=false, color=T.ac, cb=function(v) S.desync = v end})
-    Y = Y + TOG_H + GAP
-    mkSl(s, Y, {label="Intensity", min=1, max=10, default=5, cb=function(v) S.reverseResolveIntensity = v end}); Y = Y + SL_H + GAP
+    mkTog(s, Y, {label="Desync Active (keybind V)", default=false, color=T.ac, cb=function(v) S.desync = v end}); Y = Y + TOG_H + GAP
+    mkSl(s, Y, {label="Velocity Intensity", min=1, max=10, default=5, cb=function(v) S.reverseResolveIntensity = v end}); Y = Y + SL_H + GAP
 
     -- Weapon Modifications (ACS)
     mkSL(s, Y, "Weapon Modifications (ACS)"); Y = Y + SEC_H + GAP
@@ -5655,6 +6067,15 @@ local function buildWeapon()
         showPopup("Multi Bullets",tostring(cnt),T.ok)
     end);Y=Y+38+GAP
 
+    mkDropdown(s, Y, "Fire Mode", {"Auto","Semi","Burst","Safety"}, S.fireMode or "Auto", function(v)
+        S.fireMode = v
+        modifyWeaponSettings("Mode", v)
+        showPopup("Fire Mode", tostring(v), T.ok)
+    end); Y = Y + 56 + GAP
+    mkBtn(s, Y, "Apply Fire Mode", function()
+        modifyWeaponSettings("Mode", S.fireMode or "Auto")
+        showPopup("Fire Mode", tostring(S.fireMode or "Auto"), T.ok)
+    end); Y = Y + TOG_H + GAP
 
 s.CanvasSize = UDim2.new(0,0,0,Y+10)
 end
@@ -6416,108 +6837,65 @@ local function buildVis()
         end)
     end)
 
-    mkSL(s,Y,"World");Y=Y+SEC_H+GAP
-    mkTog(s,Y,{label="Fullbright",bindKey="fullbright",default=false,color=T.ac,cb=function(en) S.brightOn=en;applyBright(en) end});Y=Y+TOG_H+GAP
-    mkTog(s,Y,{label="No Fog",bindKey="noFog",default=false,color=T.ac,cb=function(en) S.fogOn=en;applyFog(en) end});Y=Y+TOG_H+GAP
-    mkTog(s,Y,{label="X-Ray",bindKey="xray",default=false,color=T.ac,cb=function(en) S.xrayOn=en;applyXR(en) end});Y=Y+TOG_H+GAP
-
-    mkSL(s,Y,"World Editor");Y=Y+SEC_H+GAP
-    mkSl(s,Y,{label="Time of Day",min=0,max=24,default=12,suffix="h",cb=function(v)
-        S.lockedClockTime=v;Li.ClockTime=v
-        if S.clockLock or S.nightModeOn then S.clockLock=true end
-    end});Y=Y+SL_H+GAP
-    mkTog(s,Y,{label="Lock Time of Day (anti-reset)",default=false,color=T.ac,cb=function(en)
-        S.clockLock=en
-        if en then
-            S.lockedClockTime=Li.ClockTime or S.lockedClockTime or 12
-            Li.ClockTime=S.lockedClockTime
-        end
-        showPopup("Clock Lock",en and ("Locked @ "..string.format("%.1f",S.lockedClockTime)) or "Unlocked",T.ac)
-    end});Y=Y+TOG_H+GAP
-    mkSl(s,Y,{label="Brightness",min=0,max=10,default=2,cb=function(v) Li.Brightness=v end});Y=Y+SL_H+GAP
-    mkSl(s,Y,{label="Fog Start",min=0,max=1000,default=0,cb=function(v) Li.FogStart=v end});Y=Y+SL_H+GAP
-    mkSl(s,Y,{label="Fog End",min=50,max=100000,default=100000,cb=function(v) Li.FogEnd=v end});Y=Y+SL_H+GAP
-    mkBtn(s,Y,"Fog Colour  →",function()
-        if openColorPicker then openColorPicker(Li.FogColor,function(c) Li.FogColor=c end) end
-    end);Y=Y+TOG_H+GAP
-    mkSl(s,Y,{label="Atmosphere Density",min=0,max=1,default=0.3,cb=function(v)
-        local a=Li:FindFirstChildOfClass("Atmosphere")
-        if a then a.Density=v end
-    end});Y=Y+SL_H+GAP
-    mkSl(s,Y,{label="Atmosphere Haze",min=0,max=10,default=0,cb=function(v)
-        local a=Li:FindFirstChildOfClass("Atmosphere")
-        if a then a.Haze=v end
-    end});Y=Y+SL_H+GAP
-    mkTog(s,Y,{label="Night Mode",default=false,color=T.ac,cb=function(en)
-        S.nightModeOn=en
-        if en then
-            S.clockLock=true
-            S.lockedClockTime=0
-            Li.ClockTime=0
-        else
-            S.lockedClockTime=14
-            Li.ClockTime=14
-        end
-        showPopup("Night Mode",en and "Permanent night" or "Day",T.ac)
-    end});Y=Y+TOG_H+GAP
-    mkBtn(s,Y,"Clear Fog",function() Li.FogEnd=1e6;Li.FogStart=0;showPopup("World","Fog cleared",T.ok) end);Y=Y+TOG_H+GAP
-    mkBtn(s,Y,"Reset Atmosphere",function()
-        for _,a in pairs(Li:GetChildren()) do
-            if a:IsA("Atmosphere") then a.Density=0.3;a.Haze=0;a.Color=Color3.fromRGB(199,199,199) end
-        end
-        showPopup("World","Atmosphere reset",T.ok)
-    end);Y=Y+TOG_H+GAP
-    mkDropdown(s,Y,"Skybox",{"Game's Default Sky","Blue Sky","Cloudy Day","Vibrant Sunset","Night Sky","Pink Dusk","Stormy","Space"},S.skyboxSelected or "Game's Default Sky",function(v)
-        S.skyboxSelected=v
+    -- Nebula Theme (PasteWare)
+    mkSL(s,Y,"Nebula Theme");Y=Y+SEC_H+GAP
+    mkTog(s,Y,{label="Nebula Theme",default=false,color=T.ac,cb=function(en)
+        S.nebulaEnabled = en
         pcall(function()
-            local sky=Li:FindFirstChildOfClass("Sky")
-            if not sky then sky=Instance.new("Sky");sky.Parent=Li end
-            local function setSky(bk,dn,ft,lf,rt,up)
-                sky.SkyboxBk=bk;sky.SkyboxDn=dn;sky.SkyboxFt=ft
-                sky.SkyboxLf=lf;sky.SkyboxRt=rt;sky.SkyboxUp=up
-            end
-            if v=="Game's Default Sky" then
-                sky:Destroy()
-            elseif v=="Blue Sky" then
-                -- realistic clear blue sky
-                setSky(
-                    "rbxassetid://6444884337","rbxassetid://6444884780","rbxassetid://6444884337",
-                    "rbxassetid://6444884337","rbxassetid://6444884337","rbxassetid://6412503613"
-                )
-            elseif v=="Cloudy Day" then
-                setSky(
-                    "rbxassetid://600830446","rbxassetid://600831635","rbxassetid://600832720",
-                    "rbxassetid://600833862","rbxassetid://600835177","rbxassetid://600837096"
-                )
-            elseif v=="Vibrant Sunset" then
-                setSky(
-                    "rbxassetid://458016711","rbxassetid://458016826","rbxassetid://458016791",
-                    "rbxassetid://458016655","rbxassetid://458016782","rbxassetid://458016792"
-                )
-            elseif v=="Night Sky" then
-                setSky(
-                    "rbxassetid://12064107","rbxassetid://12064152","rbxassetid://12064121",
-                    "rbxassetid://12064115","rbxassetid://12064125","rbxassetid://12064131"
-                )
-            elseif v=="Pink Dusk" then
-                setSky(
-                    "rbxassetid://271042516","rbxassetid://271077191","rbxassetid://271042556",
-                    "rbxassetid://271042310","rbxassetid://271042467","rbxassetid://271077958"
-                )
-            elseif v=="Stormy" then
-                setSky(
-                    "rbxassetid://153095369","rbxassetid://153095394","rbxassetid://153095420",
-                    "rbxassetid://153095442","rbxassetid://153095462","rbxassetid://153095488"
-                )
-            elseif v=="Space" then
-                setSky(
-                    "rbxassetid://159454299","rbxassetid://159454286","rbxassetid://159454299",
-                    "rbxassetid://159454286","rbxassetid://159454299","rbxassetid://159454286"
-                )
+            if en then
+                local b = Instance.new("BloomEffect")
+                b.Name = "NebulaBloom"
+                b.Intensity = 0.6
+                b.Size = 40
+                b.Threshold = 0.9
+                b.Parent = Li
+                local c = Instance.new("ColorCorrectionEffect")
+                c.Name = "NebulaColorCorrection"
+                c.TintColor = S.nebulaThemeColor or Color3.fromRGB(173,216,230)
+                c.Saturation = 0.2
+                c.Contrast = 0.1
+                c.Parent = Li
+                local a = Instance.new("Atmosphere")
+                a.Name = "NebulaAtmosphere"
+                a.Density = 0.3
+                a.Offset = 0.25
+                a.Color = S.nebulaThemeColor or Color3.fromRGB(173,216,230)
+                a.Decay = Color3.fromRGB(100,120,180)
+                a.Glare = 0.2
+                a.Haze = 1.5
+                a.Parent = Li
+                local col = S.nebulaThemeColor or Color3.fromRGB(173,216,230)
+                if not S._nebulaOrig then
+                    S._nebulaOrig = {
+                        Ambient = Li.Ambient,
+                        OutdoorAmbient = Li.OutdoorAmbient,
+                        FogStart = Li.FogStart,
+                        FogEnd = Li.FogEnd,
+                        FogColor = Li.FogColor,
+                    }
+                end
+                Li.Ambient = col
+                Li.OutdoorAmbient = col
+                Li.FogStart = 0
+                Li.FogEnd = 1000
+                Li.FogColor = col
+            else
+                for _, name in ipairs({"NebulaBloom","NebulaColorCorrection","NebulaAtmosphere"}) do
+                    local o = Li:FindFirstChild(name)
+                    if o then o:Destroy() end
+                end
+                if S._nebulaOrig then
+                    Li.Ambient = S._nebulaOrig.Ambient
+                    Li.OutdoorAmbient = S._nebulaOrig.OutdoorAmbient
+                    Li.FogStart = S._nebulaOrig.FogStart
+                    Li.FogEnd = S._nebulaOrig.FogEnd
+                    Li.FogColor = S._nebulaOrig.FogColor
+                end
             end
         end)
-        CHQueueSave()
-    end);Y=Y+56+GAP
+        showToggleNotif("Nebula", en)
+    end});Y=Y+TOG_H+GAP
+
     mkSL(s,Y,"Performance");Y=Y+SEC_H+GAP
     mkTog(s,Y,{label="Clean Explosions",default=false,color=T.ac,cb=function(en) S.cleanOn=en;applyClean(en) end});Y=Y+TOG_H+GAP
     mkTog(s,Y,{label="Remove All Explosions",default=false,color=T.ac,cb=function(en) applyNoExp(en) end});Y=Y+TOG_H+GAP
@@ -6547,7 +6925,176 @@ local function buildVis()
 s.CanvasSize=UDim2.new(0,0,0,Y+10)
 end
 
-local function buildPlayer()
+local function buildWorld()
+    _curBuildTab="World"
+    local s=tabC["World"].scroll;local Y=8
+mkSL(s,Y,"World");Y=Y+SEC_H+GAP
+    mkTog(s,Y,{label="Fullbright",bindKey="fullbright",default=false,color=T.ac,cb=function(en) S.brightOn=en;applyBright(en) end});Y=Y+TOG_H+GAP
+    mkTog(s,Y,{label="No Fog",bindKey="noFog",default=false,color=T.ac,cb=function(en) S.fogOn=en;applyFog(en) end});Y=Y+TOG_H+GAP
+    mkTog(s,Y,{label="X-Ray",bindKey="xray",default=false,color=T.ac,cb=function(en) S.xrayOn=en;applyXR(en) end});Y=Y+TOG_H+GAP
+
+    mkSL(s,Y,"World Editor");Y=Y+SEC_H+GAP
+    mkSl(s,Y,{label="Time of Day",min=0,max=24,default=12,suffix="h",cb=function(v)
+        S.lockedClockTime=v;Li.ClockTime=v
+        if S.clockLock or S.nightModeOn then S.clockLock=true end
+    end});Y=Y+SL_H+GAP
+    mkTog(s,Y,{label="Lock Time of Day (anti-reset)",default=false,color=T.ac,cb=function(en)
+        S.clockLock=en
+        if en then
+            S.lockedClockTime=Li.ClockTime or S.lockedClockTime or 12
+            Li.ClockTime=S.lockedClockTime
+        end
+        showPopup("Clock Lock",en and ("Locked @ "..string.format("%.1f",S.lockedClockTime)) or "Unlocked",T.ac)
+    end});Y=Y+TOG_H+GAP
+    mkSl(s,Y,{label="Brightness",min=0,max=10,default=2,cb=function(v) Li.Brightness=v end});Y=Y+SL_H+GAP
+    mkSl(s,Y,{label="Fog Start",min=0,max=1000,default=0,cb=function(v) Li.FogStart=v end});Y=Y+SL_H+GAP
+    mkSl(s,Y,{label="Fog End",min=50,max=100000,default=100000,cb=function(v) Li.FogEnd=v end});Y=Y+SL_H+GAP
+    mkBtn(s,Y,"Fog Colour  →",function()
+        if openColorPicker then openColorPicker(Li.FogColor,function(c) Li.FogColor=c end) end
+    end);Y=Y+TOG_H+GAP
+    mkSl(s,Y,{label="Haze Density",min=0,max=1,default=0.3,cb=function(v)
+        S.hazeDensity=v
+        applyHaze(v,nil,nil)
+    end});Y=Y+SL_H+GAP
+    mkSl(s,Y,{label="Haze Strength",min=0,max=10,default=0,cb=function(v)
+        S.hazeStrength=v
+        applyHaze(nil,v,nil)
+    end});Y=Y+SL_H+GAP
+    mkBtn(s,Y,"Haze Colour  →",function()
+        local a=ensureAtmosphere()
+        if openColorPicker then openColorPicker(a.Color,function(c) a.Color=c;S.hazeColor=c end) end
+    end);Y=Y+TOG_H+GAP
+    mkTog(s,Y,{label="Night Mode",default=false,color=T.ac,cb=function(en)
+        S.nightModeOn=en
+        if en then
+            S.clockLock=true
+            S.lockedClockTime=0
+            Li.ClockTime=0
+        else
+            S.lockedClockTime=14
+            Li.ClockTime=14
+        end
+        showPopup("Night Mode",en and "Permanent night" or "Day",T.ac)
+    end});Y=Y+TOG_H+GAP
+    mkBtn(s,Y,"Clear Fog",function() Li.FogEnd=1e6;Li.FogStart=0;showPopup("World","Fog cleared",T.ok) end);Y=Y+TOG_H+GAP
+    mkBtn(s,Y,"Reset Haze (soft look)",function()
+        local a=ensureAtmosphere()
+        a.Density=0.3;a.Haze=0;a.Color=Color3.fromRGB(199,199,199)
+        a.Decay=Color3.fromRGB(92,92,92);a.Glare=0;a.Offset=0
+        S.hazeDensity=0.3;S.hazeStrength=0
+        showPopup("World","Soft haze restored",T.ok)
+    end);Y=Y+TOG_H+GAP
+    mkDropdown(s,Y,"Skybox",{
+        "Game's Default","Blue Horizon","Cloudy","Sunset Gold","Midnight",
+        "Pink Dusk","Storm Grey","Deep Space","Arctic Ice","Roblox Classic","Crimson Night","Nebula Purple"
+    },S.skyboxSelected or "Game's Default",function(v)
+        S.skyboxSelected=v
+        pcall(function()
+            local function ensureSky()
+                local sky=Li:FindFirstChildOfClass("Sky")
+                if not sky then sky=Instance.new("Sky");sky.Parent=Li end
+                return sky
+            end
+            local function setSky(bk,dn,ft,lf,rt,up)
+                local sky=ensureSky()
+                sky.SkyboxBk=bk;sky.SkyboxDn=dn;sky.SkyboxFt=ft
+                sky.SkyboxLf=lf;sky.SkyboxRt=rt;sky.SkyboxUp=up
+                sky.CelestialBodiesShown=true
+            end
+            -- Working / normalized rbxassetid packs (6 faces)
+            if v=="Game's Default" then
+                local sky=Li:FindFirstChildOfClass("Sky")
+                if sky then sky:Destroy() end
+            elseif v=="Blue Horizon" then
+                setSky(
+                    "rbxassetid://591058823","rbxassetid://591059876","rbxassetid://591058104",
+                    "rbxassetid://591057861","rbxassetid://591057625","rbxassetid://591059642"
+                )
+            elseif v=="Cloudy" then
+                setSky(
+                    "rbxassetid://600830446","rbxassetid://600831635","rbxassetid://600832720",
+                    "rbxassetid://600886090","rbxassetid://600833862","rbxassetid://600835177"
+                )
+            elseif v=="Sunset Gold" then
+                setSky(
+                    "rbxassetid://458016711","rbxassetid://458016826","rbxassetid://458016791",
+                    "rbxassetid://458016655","rbxassetid://458016782","rbxassetid://458016792"
+                )
+            elseif v=="Midnight" then
+                setSky(
+                    "rbxassetid://12064107","rbxassetid://12064152","rbxassetid://12064121",
+                    "rbxassetid://12064115","rbxassetid://12064125","rbxassetid://12064131"
+                )
+            elseif v=="Pink Dusk" then
+                setSky(
+                    "rbxassetid://271042516","rbxassetid://271077191","rbxassetid://271042556",
+                    "rbxassetid://271042310","rbxassetid://271042467","rbxassetid://271077958"
+                )
+            elseif v=="Storm Grey" then
+                setSky(
+                    "rbxassetid://153095369","rbxassetid://153095394","rbxassetid://153095420",
+                    "rbxassetid://153095442","rbxassetid://153095462","rbxassetid://153095488"
+                )
+            elseif v=="Deep Space" then
+                setSky(
+                    "rbxassetid://159454299","rbxassetid://159454296","rbxassetid://159454286",
+                    "rbxassetid://159454293","rbxassetid://159454288","rbxassetid://159454300"
+                )
+            elseif v=="Arctic Ice" then
+                setSky(
+                    "rbxassetid://225469390","rbxassetid://225469395","rbxassetid://225469403",
+                    "rbxassetid://225469450","rbxassetid://225469471","rbxassetid://225469481"
+                )
+            elseif v=="Roblox Classic" then
+                setSky(
+                    "rbxasset://textures/sky/sky512_bk.tex","rbxasset://textures/sky/sky512_dn.tex","rbxasset://textures/sky/sky512_ft.tex",
+                    "rbxasset://textures/sky/sky512_lf.tex","rbxasset://textures/sky/sky512_rt.tex","rbxasset://textures/sky/sky512_up.tex"
+                )
+            elseif v=="Crimson Night" then
+                setSky(
+                    "rbxassetid://401664839","rbxassetid://401664862","rbxassetid://401664877",
+                    "rbxassetid://401664901","rbxassetid://401664922","rbxassetid://401664937"
+                )
+            elseif v=="Nebula Purple" then
+                setSky(
+                    "rbxassetid://1496034655","rbxassetid://1496034655","rbxassetid://1496034655",
+                    "rbxassetid://1496034655","rbxassetid://1496034655","rbxassetid://1496034655"
+                )
+            end
+        end)
+        showPopup("Skybox",tostring(v),T.ac)
+    end);Y=Y+56+GAP
+
+    
+    mkSL(s,Y,"Map Tools");Y=Y+SEC_H+GAP
+    local ds=new("TextLabel",s,{Size=UDim2.new(1,-PAD*2,0,16),Position=UDim2.new(0,PAD,0,Y),BackgroundTransparency=1,
+        Text="Owner / Laser Doors",TextColor3=T.txM,Font=Enum.Font.Gotham,TextSize=11,TextXAlignment=Enum.TextXAlignment.Left});ra("tM",ds,"TextColor3");Y=Y+18
+    local function isLaserDoor(n) local l=n:lower();return l:find("owner") or l:find("laser") end
+    local function rmDoors()
+        local n=0
+        local tf=workspace:FindFirstChild("Tycoon");if not tf then return 0 end
+        for _,d in ipairs(tf:GetDescendants()) do
+            if d:IsA("BasePart") or d:IsA("Model") then
+                if isLaserDoor(d.Name) then pcall(function() d:Destroy() end);n=n+1 end
+            end
+        end
+        return n
+    end
+    mkBtn(s,Y,"Remove Owner / Laser Doors",function()
+        ds.Text="Scanning..."
+        task.spawn(function()
+            local r=rmDoors()
+            ds.Text=r>0 and("Removed "..r.." object(s) ✓") or"None found"
+        end)
+    end);Y=Y+TOG_H+GAP
+    mkTog(s,Y,{label="Destroy Buildings/Bridges",default=false,color=T.ng,cb=function(en)
+        S.destroyBuildings=en
+        if en then showPopup("World","Building destroy ON",T.ng) end
+    end});Y=Y+TOG_H+GAP
+    s.CanvasSize=UDim2.new(0,0,0,Y+40)
+end
+
+function buildPlayer()
     _curBuildTab="Player"
     local s=tabC["Player"].scroll;local Y=8
 
@@ -6771,10 +7318,12 @@ local function buildPlayer()
     mkSL(s,Y,"Orbit Player");Y=Y+SEC_H+GAP
     mkSl(s,Y,{label="Orbit Radius",min=5,max=200,default=20,suffix=" st",cb=function(v) S.orbitSpecDist=v;CHQueueSave() end});Y=Y+SL_H+GAP
     mkSl(s,Y,{label="Orbit Speed",min=10,max=720,default=90,suffix="°/s",cb=function(v) S.orbitSpecSpd=v;CHQueueSave() end});Y=Y+SL_H+GAP
-    local orbitList=new("ScrollingFrame",s,{Position=UDim2.new(0,PAD,0,Y),Size=UDim2.new(1,-PAD*2,0,120),
+	local orbitList=new("ScrollingFrame",s,{Position=UDim2.new(0,PAD,0,Y),Size=UDim2.new(1,-PAD*2,0,120),
         BackgroundColor3=T.bgS,ScrollBarThickness=3,ScrollBarImageColor3=T.ac,ScrollBarImageTransparency=0.3,
         CanvasSize=UDim2.new(0,0,0,0),BorderSizePixel=0,BackgroundTransparency=0.1})
     corner(orbitList,8);mkStroke(orbitList,T.bd);ra("bS",orbitList,"BackgroundColor3");Y=Y+124
+    mkSL(s,Y,"Utility");Y=Y+SEC_H+GAP
+    mkTog(s, Y, {label = "Anti-AFK", default = false, color = T.ac, cb = function(en) S.antiAfkOn = en; applyAntiAfk(en) end}); Y = Y + TOG_H + GAP
     local orbitRows={}
     local function stopOrbitSpec() applyOrbitSpecific(false,nil);for _,r in ipairs(orbitRows) do if r.btn and r.btn.Parent then r.btn.BackgroundColor3=T.bgT;r.btn.TextColor3=T.tx;r.btn.Text="Orbit" end end end
     local function refOrbit()
@@ -6820,6 +7369,43 @@ local function buildPlayer()
         wf.CanvasSize=UDim2.new(0,0,0,cy)
     end
     Players.PlayerAdded:Connect(refWL);Players.PlayerRemoving:Connect(refWL);refWL()
+
+    mkSL(s,Y,"Nametag");Y=Y+SEC_H+GAP
+    mkTog(s,Y,{label="Hide Nametag  (server)",default=false,color=T.ng,cb=function(en) applyHideNametag(en) end});Y=Y+TOG_H+GAP
+
+
+    mkSL(s,Y,"Voice Chat");Y=Y+SEC_H+GAP
+    mkBtn(s,Y,"VC Unlocker",function()
+        task.spawn(function()
+            local ok,err=pcall(function()
+                local vcs=game:GetService("VoiceChatService")
+                if vcs then
+                    pcall(function() vcs:joinVoice() end)
+                    pcall(function()
+                        -- common executor unlock paths
+                        if getconnections then
+                            for _,c in pairs(getconnections(vcs.ParticipantsStateChanged or Instance.new("BindableEvent").Event)) do
+                                pcall(function() c:Disable() end)
+                            end
+                        end
+                    end)
+                end
+                -- Force-enable voice UI / mic
+                pcall(function()
+                    local StarterGui=game:GetService("StarterGui")
+                    StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Chat,true)
+                end)
+                S.vcUnlocked=true
+            end)
+            if ok then showPopup("VC Unlocker","Voice chat unlocked",T.ok)
+            else showPopup("VC Unlocker",tostring(err):sub(1,40),T.wn) end
+        end)
+    end);Y=Y+TOG_H+GAP
+
+    mkSL(s,Y,"World / Utility");Y=Y+SEC_H+GAP
+    
+    mkTog(s,Y,{label="Instant Medkit",default=false,color=T.ac,cb=function(en) S.instantMedkit=en end});Y=Y+TOG_H+GAP
+
 
     s.CanvasSize=UDim2.new(0,0,0,Y+12)
 end
@@ -6893,7 +7479,7 @@ local function buildMisc()
     Y=Y+math.ceil(#exploits/COLS)*(CARD_H+CARD_GAP)+GAP
 
     mkSL(s,Y,"Utility");Y=Y+SEC_H+GAP
-    mkTog(s,Y,{label="Anti-AFK",default=false,color=T.ac,cb=function(en) S.antiAfkOn=en;applyAntiAfk(en) end});Y=Y+TOG_H+GAP
+    
     mkSL(s,Y,"Server");Y=Y+SEC_H+GAP
     mkBtn(s,Y,"Rejoin Server",function() TS:TeleportToPlaceInstance(game.PlaceId,game.JobId) end);Y=Y+TOG_H+GAP
     local hopBtn=mkBtn(s,Y,"Server Hop",function()
@@ -6933,63 +7519,9 @@ local function buildMisc()
     new("UIPadding",sib,{PaddingLeft=UDim.new(0,8)});mkStroke(sib,T.bd);ra("bT",sib,"BackgroundColor3");ra("tx",sib,"TextColor3");Y=Y+TOG_H+GAP
     mkBtn(s,Y,"Join Server",function() local j=sib.Text;if j~="" then TS:TeleportToPlaceInstance(game.PlaceId,j) end end);Y=Y+TOG_H+GAP
     local cpb=mkBtn(s,Y,"Copy My Server ID",function() local j=game.JobId;if j~="" then setclipboard(j);cpb.Text="Copied!";task.delay(2,function() cpb.Text="Copy My Server ID" end) end end);Y=Y+TOG_H+GAP
-    mkSL(s,Y,"Bypass");Y=Y+SEC_H+GAP
-    local ds=new("TextLabel",s,{Size=UDim2.new(1,-PAD*2,0,14),Position=UDim2.new(0,PAD,0,Y),BackgroundTransparency=1,TextColor3=T.txM,Font=Enum.Font.Gotham,TextSize=10,Text="Removes Owner / Laser Doors",TextXAlignment=Enum.TextXAlignment.Left});ra("tM",ds,"TextColor3");Y=Y+18
-    local function isDoor(n) local l=n:lower();return l:find("owner") or l:find("laser") end
-    local function rmDoors()
-        local tf=workspace:FindFirstChild("Tycoon");if not tf then return 0 end
-        local ts=tf:FindFirstChild("Tycoons");if not ts then return 0 end
-        local n=0;for _,ty in pairs(ts:GetChildren()) do for _,d in pairs(ty:GetDescendants()) do if isDoor(d.Name) then pcall(function() d:Destroy() end);n=n+1 end end end;return n
-    end
-    workspace.DescendantAdded:Connect(function(o) if isDoor(o.Name) then task.defer(function() if o and o.Parent then pcall(function() o:Destroy() end) end end) end end)
-    mkBtn(s,Y,"Remove Owner / Laser Doors",function() ds.Text="Scanning...";task.spawn(function() local r=rmDoors();ds.Text=r>0 and("Removed "..r.." object(s) ✓") or"None found" end) end);Y=Y+TOG_H+GAP
-    mkSL(s,Y,"Nametag");Y=Y+SEC_H+GAP
-    mkTog(s,Y,{label="Hide Nametag  (server)",default=false,color=T.ng,cb=function(en) applyHideNametag(en) end});Y=Y+TOG_H+GAP
-
+    
     -- Voice Chat Unlocker
-    mkSL(s,Y,"Voice Chat");Y=Y+SEC_H+GAP
-    mkBtn(s,Y,"VC Unlocker",function()
-        task.spawn(function()
-            local ok,err=pcall(function()
-                local vcs=game:GetService("VoiceChatService")
-                if vcs then
-                    pcall(function() vcs:joinVoice() end)
-                    pcall(function()
-                        -- common executor unlock paths
-                        if getconnections then
-                            for _,c in pairs(getconnections(vcs.ParticipantsStateChanged or Instance.new("BindableEvent").Event)) do
-                                pcall(function() c:Disable() end)
-                            end
-                        end
-                    end)
-                end
-                -- Force-enable voice UI / mic
-                pcall(function()
-                    local StarterGui=game:GetService("StarterGui")
-                    StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Chat,true)
-                end)
-                S.vcUnlocked=true
-            end)
-            if ok then showPopup("VC Unlocker","Voice chat unlocked",T.ok)
-            else showPopup("VC Unlocker",tostring(err):sub(1,40),T.wn) end
-        end)
-    end);Y=Y+TOG_H+GAP
-
-    mkSL(s,Y,"World / Utility");Y=Y+SEC_H+GAP
-    mkTog(s,Y,{label="Destroy Buildings/Bridges",default=false,color=T.ng,cb=function(en)
-        S.destroyBuildings=en
-        if en then
-            task.spawn(function()
-                for _,obj in pairs(workspace:GetDescendants()) do
-                    if obj:IsA("Model") and (obj.Name:lower():find("bridge") or obj.Name:lower():find("building") or obj.Name:lower():find("structure")) then
-                        pcall(function() obj:Destroy() end)
-                    end
-                end
-            end)
-        end
-    end});Y=Y+TOG_H+GAP
-    mkTog(s,Y,{label="Instant Medkit",default=false,color=T.ac,cb=function(en) S.instantMedkit=en end});Y=Y+TOG_H+GAP
-
+    
     mkSL(s,Y,"Extra Features");Y=Y+SEC_H+GAP
     mkTog(s,Y,{label="Admin/Staff Notify",default=false,color=T.wn,cb=function(en)
         S.adminNotifyEnabled=en
@@ -7044,79 +7576,7 @@ local function buildMisc()
         applyStreamproof(en)
         showPopup("Streamproof",en and "Re-parented to hidden GUI" or "PlayerGui",T.ac)
     end});Y=Y+TOG_H+GAP
-    mkTog(s,Y,{label="Streamer Mode (hide names)",default=false,color=T.wn,cb=function(en)
-        S.streamerMode=en
-        local StarterGui=game:GetService("StarterGui")
-        local function hideWTLeaderboard(hide)
-            pcall(function()
-                local pg=plr:FindFirstChild("PlayerGui")
-                if not pg then return end
-                for _,g in ipairs(pg:GetChildren()) do
-                    if not g:IsA("ScreenGui") then continue end
-                    local n=g.Name:lower()
-                    -- War Tycoon / custom boards
-                    if n:find("leader") or n:find("score") or n:find("playerlist") or n:find("tablist")
-                        or n:find("board") or n:find("rank") or n:find("statsui") then
-                        if hide then
-                            if g:GetAttribute("CH_SM_En")==nil then g:SetAttribute("CH_SM_En",g.Enabled) end
-                            g.Enabled=false
-                        else
-                            local was=g:GetAttribute("CH_SM_En")
-                            if was~=nil then g.Enabled=was; g:SetAttribute("CH_SM_En",nil) end
-                        end
-                    end
-                end
-                -- also match frames named leaderboard deeper
-                for _,d in ipairs(pg:GetDescendants()) do
-                    if d:IsA("Frame") or d:IsA("ScrollingFrame") then
-                        local n=d.Name:lower()
-                        if n=="leaderboard" or n=="playerlist" or n=="scoreboard" or n:find("leaderboard") then
-                            if hide then
-                                if d:GetAttribute("CH_SM_Vis")==nil then d:SetAttribute("CH_SM_Vis",d.Visible) end
-                                d.Visible=false
-                            else
-                                local was=d:GetAttribute("CH_SM_Vis")
-                                if was~=nil then d.Visible=was; d:SetAttribute("CH_SM_Vis",nil) end
-                            end
-                        end
-                    end
-                end
-            end)
-        end
-        if en then
-            pcall(function() StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList,false) end)
-            hideWTLeaderboard(true)
-            pcall(function()
-                for _,g in ipairs(plr.PlayerGui:GetDescendants()) do
-                    if g:IsA("TextLabel") or g:IsA("TextButton") then
-                        local t=(g.Text or "")
-                        if #t>0 and (#t<24) then
-                            for _,p in ipairs(Players:GetPlayers()) do
-                                if t==p.Name or t==p.DisplayName then
-                                    g:SetAttribute("CH_SM_Prev",t)
-                                    g.Text="Player"
-                                    break
-                                end
-                            end
-                        end
-                    end
-                end
-            end)
-            S._streamerPrevNames=S.espNames
-            S.espNames=false
-        else
-            pcall(function() StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList,true) end)
-            hideWTLeaderboard(false)
-            pcall(function()
-                for _,g in ipairs(plr.PlayerGui:GetDescendants()) do
-                    local prev=g:GetAttribute("CH_SM_Prev")
-                    if prev then g.Text=prev;g:SetAttribute("CH_SM_Prev",nil) end
-                end
-            end)
-            if S._streamerPrevNames~=nil then S.espNames=S._streamerPrevNames end
-        end
-        showPopup("Streamer Mode",en and "Names + boards hidden" or "Restored",T.wn)
-    end});Y=Y+TOG_H+GAP
+    
     mkTog(s,Y,{label="Anti RPG Spam",default=false,color=T.ng,cb=function(en)
         applyAntiRpg(en)
         showPopup("Anti RPG",en and "Protecting" or "Off",en and T.ok or T.txM)
@@ -7264,14 +7724,7 @@ local function buildMisc()
         showPopup("Game UI",en and "Hidden (snapshot saved)" or "Restored from snapshot",T.ac)
     end});Y=Y+TOG_H+GAP
 
-    -- ArrayList style
-    mkSL(s,Y,"ArrayList Style");Y=Y+SEC_H+GAP
-    local styles={"Default","Gradient","Minimal","Shadow","Rainbow"}
-    mkDropdown(s,Y,"Style",styles,S.arrayListStyle or "Default",function(v)
-        S.arrayListStyle=v
-        if refreshArrayList then refreshArrayList() end
-    end);Y=Y+56+GAP
-
+    
     -- Emotes (Infinite Yield animation IDs)
     mkSL(s,Y,"Emotes");Y=Y+SEC_H+GAP
     local function isR15Char(c)
@@ -7286,7 +7739,7 @@ local function buildMisc()
         if S._bangDied then pcall(function() S._bangDied:Disconnect() end);S._bangDied=nil end
     end
     -- IY Jerk Off: tool + animation loop
-    mkBtn(s,Y,"Jerk Off (IY)",function()
+    mkBtn(s,Y,"Jerk Off",function()
         stopAllEmotes()
         local c=plr.Character;if not c then showPopup("Emote","No character",T.wn);return end
         local humanoid=c:FindFirstChildWhichIsA("Humanoid")
@@ -7335,7 +7788,7 @@ local function buildMisc()
         showPopup("Jerk Off","Equip the tool in your hotbar",T.ac)
     end);Y=Y+TOG_H+GAP
 
-    mkBtn(s,Y,"Bang (IY)",function()
+    mkBtn(s,Y,"Bang",function()
         stopAllEmotes()
         local c=plr.Character;if not c then return end
         local humanoid=c:FindFirstChildWhichIsA("Humanoid");if not humanoid then return end
@@ -7391,7 +7844,7 @@ local function buildMisc()
     end);Y=Y+TOG_H+GAP
 
     -- Client-side meme prop (detailed, local only)
-    mkBtn(s,Y,"Toggle Client Penis (meme)",function()
+    mkBtn(s,Y,"Penis",function()
         if S._penisModel and S._penisModel.Parent then
             S._penisModel:Destroy();S._penisModel=nil
             showPopup("Meme","Removed",T.txM);return
@@ -7537,6 +7990,16 @@ end
 local function buildLayout()
     _curBuildTab="Layout"
     local s=tabC["Layout"].scroll;s:ClearAllChildren();local Y=8
+
+    -- ArrayList (moved from Misc)
+-- ArrayList style
+    mkSL(s,Y,"ArrayList Style");Y=Y+SEC_H+GAP
+    local styles={"Default","Gradient","Minimal","Shadow","Rainbow"}
+    mkDropdown(s,Y,"Style",styles,S.arrayListStyle or "Default",function(v)
+        S.arrayListStyle=v
+        if refreshArrayList then refreshArrayList() end
+    end);Y=Y+56+GAP
+
     mkSL(s,Y,"Nav Layout");Y=Y+SEC_H+GAP
     local function mkModeBtn(iconName,lbl,desc,mode)
         local active=(S.navMode==mode)
@@ -8141,7 +8604,7 @@ local function buildOnline()
     s.CanvasSize=UDim2.new(0,0,0,Y+12)
 end
 
-buildMove();buildWeapon();buildRPG();buildVis();buildPlayer();buildVehicle();buildMisc();buildOnline();buildLayout()
+buildMove();buildWeapon();buildRPG();buildVis();buildWorld();buildPlayer();buildVehicle();buildMisc();buildOnline();buildLayout()
 _curBuildTab=nil
 
 -- User panel (same content area as any tab; opened from bottom-left button)
@@ -8774,6 +9237,11 @@ UIS.InputBegan:Connect(function(inp,gp)
     end
     local kn=inp.KeyCode.Name;if kn and S.keys[kn]~=nil then S.keys[kn]=true end
     if inp.KeyCode==Enum.KeyCode.LeftControl then S.keys.Ctrl=true end
+    -- PasteWare desync toggle key (V)
+    if not gp and inp.KeyCode==Enum.KeyCode.V and S.desyncEnabled then
+        S.desync = not S.desync
+        showPopup("Desync", S.desync and "ACTIVE" or "off", S.desync and T.ok or T.txM)
+    end
 end)
 UIS.InputEnded:Connect(function(inp)
     if S.dead then return end
@@ -8793,8 +9261,9 @@ local function runSplash()
     new("UIStroke",splash,{Color=T.ac,Thickness=0.4,Transparency=0.5})
 
     local function mk(cls,par,props)
-        local o=Instance.new(cls);if par then o.Parent=par end
+        local o=Instance.new(cls)
         if props then for k,v in pairs(props) do o[k]=v end end
+        if par then o.Parent=par end
         if o:IsA("TextLabel") then o.TextTransparency=1 end
         if o:IsA("Frame") or o:IsA("ImageLabel") then o.BackgroundTransparency=1 end
         return o
@@ -8841,6 +9310,7 @@ local function runSplash()
         BorderSizePixel=0,ZIndex=51
     });corner(pillBg,11)
     new("UIStroke",pillBg,{Color=T.ac,Thickness=0.5,Transparency=1}).Name="pillStroke"
+
     local pillLbl=mk("TextLabel",pillBg,{
         Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text="v1",
         TextColor3=T.ac,Font=Enum.Font.GothamBold,
@@ -8926,7 +9396,7 @@ local function runSplash()
         task.wait(0.5)
 
         local steps={
-            {txt="Connecting...",       pct=0.20, wait=0.45},
+            {txt="Connecting...",   pct=0.20, wait=0.45},
             {txt="Loading modules...",  pct=0.52, wait=0.55},
             {txt="Initialising ESP...", pct=0.82, wait=0.50},
             {txt="Ready",              pct=1.00, wait=0.30},
@@ -8950,16 +9420,19 @@ local function runSplash()
             {Size=UDim2.new(0,WW,0,WH),BackgroundTransparency=0.18}):Play()
     end)
 end
+
 runSplash()
 
 do
     local ff=RepS:FindFirstChild("Freefall");if ff then ff:Destroy() end
     local ae=RepS:FindFirstChild("ACS_Engine");if ae then pcall(function() local evs=ae:FindFirstChild("Events");if evs then local fd=evs:FindFirstChild("FDMG");if fd then fd:Destroy() end end end) end
 end
+
 S.gravV=workspace.Gravity
 apTh(TL[themeIdx] or TL[1]);updCards();initSys()
 if S.performanceMode then applyPerformance(true) end
 if S.rainbowOn then applyRainbow(true) end
-end
+
+end -- Closes function _ui()
 
 _ui()
