@@ -31,67 +31,147 @@ local TL={
 {n="Lava",     d="Molten · Orange",  i="🔥",ac=Color3.fromRGB(255,120,50),  bg=Color3.fromRGB(14,6,2),      bS=Color3.fromRGB(22,10,4),   bT=Color3.fromRGB(32,16,8),   bd=Color3.fromRGB(80,35,15),  of=Color3.fromRGB(55,25,12),  tx=Color3.fromRGB(255,235,215),tM=Color3.fromRGB(220,160,100),tD=Color3.fromRGB(150,90,60)},
 {n="Aqua",     d="Deep Ocean",       i="🌊",ac=Color3.fromRGB(50,200,220),  bg=Color3.fromRGB(2,8,14),      bS=Color3.fromRGB(6,14,22),  bT=Color3.fromRGB(10,20,32),  bd=Color3.fromRGB(20,45,65),  of=Color3.fromRGB(14,32,48),  tx=Color3.fromRGB(210,245,255),tM=Color3.fromRGB(110,180,200),tD=Color3.fromRGB(60,110,130)},
 {n="Blood",    d="Crimson Night",    i="🩸",ac=Color3.fromRGB(220,40,60),   bg=Color3.fromRGB(10,2,4),      bS=Color3.fromRGB(16,6,8),   bT=Color3.fromRGB(24,10,14),  bd=Color3.fromRGB(60,15,25),  of=Color3.fromRGB(40,12,18),  tx=Color3.fromRGB(255,225,230),tM=Color3.fromRGB(200,120,130),tD=Color3.fromRGB(130,60,70)},
+{n="Custom",   d="Your colours",     i="✎",ac=Color3.fromRGB(120,47,204), bg=Color3.fromRGB(5,7,11),    bS=Color3.fromRGB(11,13,18),  bT=Color3.fromRGB(20,22,28),  bd=Color3.fromRGB(35,38,48),  of=Color3.fromRGB(27,30,37),  tx=Color3.fromRGB(230,230,235),tM=Color3.fromRGB(140,142,150),tD=Color3.fromRGB(90,92,100)},
 }
+local TL_PRESETS={}
+for i,t in ipairs(TL) do
+    if t.n~="Custom" then
+        TL_PRESETS[i]={n=t.n,d=t.d,i=t.i,ac=t.ac,bg=t.bg,bS=t.bS,bT=t.bT,bd=t.bd,of=t.of,tx=t.tx,tM=t.tM,tD=t.tD}
+    end
+end
+local function customThemeIdx()
+    for i,t in ipairs(TL) do if t.n=="Custom" then return i end end
+    return #TL
+end
+local applyPresetToCustom -- forward
+
 local themeIdx=1
 local winTrans=18
-local reg={ac={},bg={},bS={},bT={},tx={},tM={},tD={},bd={},bc={},tr={},tog={},cards={},accentLines={},ico={}}
+local S -- forward decl (assigned below; apTh/theme helpers need it in scope)
+local reg={ac={},bg={},bS={},bT={},tx={},tM={},tD={},bd={},bc={},tr={},tog={},cards={},accentLines={},ico={},sb={}}
 local TF=TweenInfo.new(0.12,Enum.EasingStyle.Quad,Enum.EasingDirection.Out)
 local TS2=TweenInfo.new(0.22,Enum.EasingStyle.Quad,Enum.EasingDirection.Out)
 local _winGradRef=nil
 
 local function ra(k,o,p) table.insert(reg[k],{o,p}) end
-local function apTh(t)
+local function raScroll(sf)
+    if sf and sf:IsA("ScrollingFrame") then
+        table.insert(reg.sb, sf)
+        sf.ScrollBarImageColor3 = T.ac
+    end
+end
+local function refreshSidebarTheme()
+    -- Prefer callback registered inside _ui (has tabC/side refs in scope)
+    if S and type(S._themeSidebarRefresh)=="function" then
+        pcall(S._themeSidebarRefresh)
+        return
+    end
+end
+
+local function refreshAccentLines()
+    for _,und in ipairs(reg.accentLines) do
+        if und and und.Parent then
+            und.BackgroundColor3=T.ac
+            local ug=und:FindFirstChildOfClass("UIGradient")
+            if ug then
+                ug.Color=ColorSequence.new({
+                    ColorSequenceKeypoint.new(0,T.ac),
+                    ColorSequenceKeypoint.new(0.45,Color3.new(math.min(1,T.ac.R*1.4),math.min(1,T.ac.G*1.4),math.min(1,T.ac.B*1.4))),
+                    ColorSequenceKeypoint.new(1,Color3.new(T.ac.R*0.35,T.ac.G*0.35,T.ac.B*0.35))
+                })
+            end
+        end
+    end
+end
+
+local function apTh(t,keepLight)
+    -- Apply dark theme base from TL entry
     T.bg=t.bg;T.bgS=t.bS;T.bgT=t.bT;T.ac=t.ac;T.bd=t.bd;T.off=t.of
     T.tx=t.tx;T.txM=t.tM;T.txD=t.tD
     T.txSel=Color3.new((t.tx.R+t.tM.R)/2,(t.tx.G+t.tM.G)/2,(t.tx.B+t.tM.B)/2)
-    local map={ac="ac",bg="bg",bS="bS",bT="bT",tx="tx",tM="tM",tD="tD",bc="bd"}
-    for k,mk in pairs(map) do for _,r in ipairs(reg[k]) do if r[1] and r[1].Parent then r[1][r[2]]=t[mk] end end end
-    for _,s in ipairs(reg.bd) do if s and s.Parent then s.Color=t.bd end end
-    for _,r in ipairs(reg.tr) do if r[1] and r[1].Parent then r[1][r[2]]=t.of end end
-    for _,g in ipairs(reg.tog) do if g.f and g.f.Parent then g.f.BackgroundColor3=g.on() end;if g.c and g.c.Parent then g.c.BackgroundColor3=g.cn() end end
-    for i,card in ipairs(reg.cards) do
-        local sel=(i==themeIdx)
-        TwS:Create(card.s,TS2,{Color=sel and t.ac or t.bd,Thickness=sel and 2 or 1}):Play()
-        card.n.TextColor3=sel and t.ac or t.tx
-        if card.ic then card.ic.TextColor3=sel and t.ac or t.tD end
+
+    -- If light mode stays on, keep accent from theme but force light surfaces/text
+    if S and S.lightMode and keepLight~=false then
+        T.bg=Color3.fromRGB(248,249,252);T.bgS=Color3.fromRGB(255,255,255);T.bgT=Color3.fromRGB(236,238,244)
+        T.bd=Color3.fromRGB(200,205,215);T.off=Color3.fromRGB(190,195,205)
+        T.tx=Color3.fromRGB(18,20,28);T.txM=Color3.fromRGB(55,58,70);T.txD=Color3.fromRGB(110,115,130)
+        T.txSel=Color3.fromRGB(10,12,18)
+        -- accent stays from theme (t.ac already set)
     end
 
-    -- Theme gradients on registered frames / window
-        for _,ic in ipairs(reg.ico) do
-        if ic[1] and ic[1].Parent then
-            ic[1][ic[2]] = t.tM
-        end
+    local map={ac="ac",bg="bg",bS="bS",bT="bT",tx="tx",tM="tM",tD="tD",bc="bd"}
+    for k,mk in pairs(map) do
+        local col=(k=="ac") and T.ac or (k=="bg" and T.bg) or (k=="bS" and T.bgS) or (k=="bT" and T.bgT) or (k=="tx" and T.tx) or (k=="tM" and T.txM) or (k=="tD" and T.txD) or T.bd
+        for _,r in ipairs(reg[k]) do if r[1] and r[1].Parent then r[1][r[2]]=col end end
     end
-if _winGradRef and _winGradRef.Parent then
-        _winGradRef.Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0, t.bg),
-            ColorSequenceKeypoint.new(0.5, t.bS),
-            ColorSequenceKeypoint.new(1, Color3.new(math.min(1,t.bg.R*1.15), math.min(1,t.bg.G*1.15), math.min(1,t.bg.B*1.2)))
+    for _,s in ipairs(reg.bd) do if s and s.Parent then s.Color=T.bd end end
+    for _,r in ipairs(reg.tr) do if r[1] and r[1].Parent then r[1][r[2]]=T.off end end
+    for _,g in ipairs(reg.tog) do
+        if g.f and g.f.Parent then g.f.BackgroundColor3=g.on() end
+        if g.c and g.c.Parent then g.c.BackgroundColor3=g.cn() end
+    end
+    for i,card in ipairs(reg.cards) do
+        local sel=(i==themeIdx)
+        if card.s and card.s.Parent then
+            TwS:Create(card.s,TS2,{Color=sel and T.ac or T.bd,Thickness=sel and 2 or 1}):Play()
+        end
+        if card.n and card.n.Parent then card.n.TextColor3=sel and T.ac or T.tx end
+        if card.ic and card.ic.Parent then card.ic.TextColor3=sel and T.ac or T.txD end
+    end
+    for _,ic in ipairs(reg.ico) do
+        if ic[1] and ic[1].Parent then ic[1][ic[2]]=T.txM end
+    end
+    if _winGradRef and _winGradRef.Parent then
+        _winGradRef.Color=ColorSequence.new({
+            ColorSequenceKeypoint.new(0,T.bg),
+            ColorSequenceKeypoint.new(0.5,T.bgS),
+            ColorSequenceKeypoint.new(1,Color3.new(math.min(1,T.bg.R*1.12),math.min(1,T.bg.G*1.12),math.min(1,T.bg.B*1.15)))
         })
     end
     for _,card in ipairs(reg.cards) do
         if card.f and card.f.Parent then
-            local g = card.f:FindFirstChildOfClass("UIGradient")
-            if not g then
-                g = Instance.new("UIGradient")
-                g.Rotation = 120
-                g.Parent = card.f
-            end
-            g.Color = ColorSequence.new({
-                ColorSequenceKeypoint.new(0, t.bT),
-                ColorSequenceKeypoint.new(1, t.bS)
+            local g=card.f:FindFirstChildOfClass("UIGradient")
+            if not g then g=Instance.new("UIGradient");g.Rotation=120;g.Parent=card.f end
+            g.Color=ColorSequence.new({
+                ColorSequenceKeypoint.new(0,T.bgT),
+                ColorSequenceKeypoint.new(1,T.bgS)
             })
         end
     end
-
+    refreshAccentLines()
+    refreshSidebarTheme()
+    for _,sf in ipairs(reg.sb) do
+        if sf and sf.Parent then sf.ScrollBarImageColor3=T.ac end
+    end
+    if S and S._layoutModePainters then
+        for _,fn in ipairs(S._layoutModePainters) do pcall(fn) end
+    end
+    if S and type(S._applyUiStyle)=="function" then
+        pcall(function() S._applyUiStyle(S.uiStyle or "Solid",true) end)
+    end
+end
+local function applyPresetToCustom(presetIdx, silent)
+    local srcT=TL_PRESETS[presetIdx] or (TL[presetIdx] and TL[presetIdx].n~="Custom" and TL[presetIdx])
+    if not srcT then return end
+    local ci=customThemeIdx()
+    local c=TL[ci]
+    for _,k in ipairs({"ac","bg","bS","bT","bd","of","tx","tM","tD"}) do c[k]=srcT[k] end
+    c.d="From "..tostring(srcT.n)
+    themeIdx=ci
+    apTh(c, true)
+    if not silent and type(showPopup)=="function" then
+        -- showPopup may not exist yet during early load
+    end
 end
 local function updCards()
     local t2=TL[themeIdx]
     for i,card in ipairs(reg.cards) do
         local sel=(i==themeIdx)
-        TwS:Create(card.s,TS2,{Color=sel and t2.ac or Color3.fromRGB(35,35,50),Thickness=sel and 2 or 1}):Play()
-        card.n.TextColor3=sel and t2.ac or Color3.fromRGB(235,235,245)
-        if card.ic then card.ic.TextColor3=sel and t2.ac or Color3.fromRGB(110,110,140) end
+        if card.s and card.s.Parent then
+            TwS:Create(card.s,TS2,{Color=sel and T.ac or T.bd,Thickness=sel and 2 or 1}):Play()
+        end
+        if card.n and card.n.Parent then card.n.TextColor3=sel and T.ac or T.tx end
+        if card.ic and card.ic.Parent then card.ic.TextColor3=sel and T.ac or T.txD end
     end
 end
 
@@ -111,7 +191,7 @@ local ev=rSys and rSys:WaitForChild("Events",10)
 local hitR=ev and ev:FindFirstChild("RocketHit")
 local expEv=ev and ev:FindFirstChild("ExplosionsMake")
 
-local S={
+S={
     fireRate=0.001,maxDist=4000,rktPerTgt=1,spread=5,
     wlist={},spamOn=false,simFire=false,dead=false,
     espOn=false,espBoxes={},vehESP={},espCache={},
@@ -3093,7 +3173,7 @@ local function mkIcon(par,name,size,props)
 end
 -- Lucide icon name map for tabs / chrome
 local ICO={
-    Move="move", Weapon="crosshair", RPG="rocket", Vis="eye", Vehicle="settings-2", Misc="sparkles", Online="globe", Layout="layout-grid",
+    Move="move", Weapon="crosshair", RPG="rocket", Vis="eye", Vehicle="settings-2", Misc="sparkles", Online="globe", Styling="layout-grid",
     Player="users", Commands="terminal", Settings="settings", Close="x", Min="minus", Max="plus", Search="search",
     Star="star", Edit="pencil", Slash="slash", Lock="lock",
     Fly="plane", Esp="eye", Spam="zap", Speed="gauge", Jump="arrow-up", Noclip="ghost",
@@ -3360,62 +3440,122 @@ new("UIGradient",hdr,{
 })
 
 do
+    -- 3D black hole logo (lightweight)
     local logoBg=new("Frame",hdr,{
-        Size=UDim2.new(0,32,0,32),Position=UDim2.new(0,PAD,.5,-16),
-        BackgroundColor3=T.ac,BorderSizePixel=0
-    });corner(logoBg,8);ra("ac",logoBg,"BackgroundColor3")
-        local logoIco=mkIcon(logoBg,"user-star",20,{
-        Position=UDim2.new(0.5,-10,0.5,-10),
-        ImageColor3=Color3.fromRGB(255,255,255),
-        ZIndex=2,
+        Size=UDim2.new(0,36,0,36),Position=UDim2.new(0,PAD,.5,-18),
+        BackgroundTransparency=1,BorderSizePixel=0,ZIndex=3
     })
-    if logoIco:IsA("TextLabel") then
-                logoIco:Destroy()
-        logoIco=mkIcon(logoBg,"star",20,{
-            Position=UDim2.new(0.5,-10,0.5,-10),
-            ImageColor3=Color3.fromRGB(255,255,255),
-            ZIndex=2,
-        })
+    local vp=new("ViewportFrame",logoBg,{
+        Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,BorderSizePixel=0,ZIndex=4,
+        Ambient=Color3.fromRGB(6,4,14),LightColor=Color3.fromRGB(255,240,255),LightDirection=Vector3.new(-0.25,-0.85,-0.4)
+    })
+    local vcam=Instance.new("Camera")
+    vcam.FieldOfView=30
+    vcam.Parent=vp
+    vp.CurrentCamera=vcam
+    local world=Instance.new("WorldModel")
+    world.Parent=vp
+    local bhModel=Instance.new("Model")
+    bhModel.Name="CH_BlackHole"
+    bhModel.Parent=world
+
+    local horizon=Instance.new("Part")
+    horizon.Name="Horizon"
+    horizon.Anchored=true;horizon.CanCollide=false
+    horizon.Material=Enum.Material.SmoothPlastic
+    horizon.Color=Color3.fromRGB(0,0,0)
+    horizon.Size=Vector3.new(0.72,0.72,0.72)
+    horizon.Shape=Enum.PartType.Ball
+    horizon.Parent=bhModel
+    local photon=Instance.new("Part")
+    photon.Anchored=true;photon.CanCollide=false
+    photon.Material=Enum.Material.Neon
+    photon.Color=T.ac
+    photon.Transparency=0.5
+    photon.Size=Vector3.new(0.95,0.95,0.95)
+    photon.Shape=Enum.PartType.Ball
+    photon.Parent=bhModel
+    local photonHaze=Instance.new("Part")
+    photonHaze.Anchored=true;photonHaze.CanCollide=false
+    photonHaze.Material=Enum.Material.Neon
+    photonHaze.Color=T.ac
+    photonHaze.Transparency=0.82
+    photonHaze.Size=Vector3.new(1.18,1.18,1.18)
+    photonHaze.Shape=Enum.PartType.Ball
+    photonHaze.Parent=bhModel
+
+    -- Each ring is ONE model we rotate as a unit (cheap)
+    local function buildRingModel(radius, tube, segments, col, baseTrans, yOff)
+        local mdl=Instance.new("Model")
+        mdl.Name="Ring"
+        -- invisible center anchor so PivotTo spins around black hole core
+        local anchor=Instance.new("Part")
+        anchor.Name="Anchor"
+        anchor.Anchored=true;anchor.CanCollide=false
+        anchor.Transparency=1
+        anchor.Size=Vector3.new(0.05,0.05,0.05)
+        anchor.CFrame=CFrame.new(0, yOff, 0)
+        anchor.Parent=mdl
+        for i=1,segments do
+            local a=(i/segments)*math.pi*2
+            local x=math.cos(a)*radius
+            local z=math.sin(a)*radius
+            local p=Instance.new("Part")
+            p.Anchored=true;p.CanCollide=false
+            p.Material=Enum.Material.Neon
+            p.Color=col
+            p.Transparency=baseTrans
+            p.Size=Vector3.new(tube*1.6, tube*1.6, tube*2.2)
+            p.CFrame=CFrame.new(x, yOff, z)*CFrame.Angles(0, -a+math.pi/2, 0.12)
+            p.Parent=mdl
+            local m=Instance.new("SpecialMesh")
+            m.MeshType=Enum.MeshType.Sphere
+            m.Scale=Vector3.new(1,1,1.3)
+            m.Parent=p
+        end
+        mdl.PrimaryPart=anchor
+        mdl.Parent=bhModel
+        return mdl
     end
-        do
-        local spinConn=nil
-        local hover=false
-        local ang=0
-        logoBg.MouseEnter:Connect(function()
-            hover=true
-            if spinConn then return end
-            spinConn=RS.RenderStepped:Connect(function(dt)
-                if not hover or not logoIco or not logoIco.Parent then return end
-                ang=(ang+dt*70)%360
-                local rad=math.rad(ang)
-                local sx=math.max(0.15,math.abs(math.cos(rad)))
-                logoIco.Size=UDim2.new(0,20*sx,0,20)
-                logoIco.Position=UDim2.new(0.5,-10*sx,0.5,-10)
-                logoIco.Rotation=math.sin(rad)*22
-                local rb=Color3.fromHSV((tick()*0.35)%1,0.9,1)
-                if logoIco:IsA("ImageLabel") then
-                    local face=math.cos(rad)
-                    logoIco.ImageTransparency=face<0 and 0.4 or 0
-                    logoIco.ImageColor3=rb
-                else
-                    logoIco.TextColor3=rb
-                end
-            end)
-        end)
-        logoBg.MouseLeave:Connect(function()
-            hover=false
-            if spinConn then spinConn:Disconnect();spinConn=nil end
-            if logoIco and logoIco.Parent then
-                logoIco.Size=UDim2.new(0,20,0,20)
-                logoIco.Position=UDim2.new(0.5,-10,0.5,-10)
-                logoIco.Rotation=0
-                if logoIco:IsA("ImageLabel") then
-                    logoIco.ImageTransparency=0
-                    logoIco.ImageColor3=Color3.fromRGB(255,255,255)
-                else
-                    logoIco.TextColor3=Color3.fromRGB(255,255,255)
+
+    local ringModels={
+        {m=buildRingModel(1.1, 0.09, 16, T.ac, 0.28, 0), speed=1.5},
+        {m=buildRingModel(1.55, 0.08, 18, T.ac, 0.45, 0.02), speed=0.95},
+        {m=buildRingModel(2.0, 0.06, 20, T.ac, 0.65, -0.01), speed=0.55},
+    }
+    bhModel.PrimaryPart=horizon
+    vcam.CFrame=CFrame.new(Vector3.new(0.15, 0.85, 3.6), Vector3.new(0,0,0))
+
+    do
+        local t0=0
+        local acc=0
+        RS.RenderStepped:Connect(function(dt)
+            if not bhModel or not bhModel.Parent then return end
+            t0=t0+dt
+            acc=acc+dt
+            -- theme color ~4fps is enough
+            if acc>=0.25 then
+                acc=0
+                local col=T.ac
+                if photon and photon.Parent then photon.Color=col end
+                if photonHaze and photonHaze.Parent then photonHaze.Color=col end
+                for _,r in ipairs(ringModels) do
+                    if r.m then
+                        for _,p in ipairs(r.m:GetChildren()) do
+                            if p:IsA("BasePart") then p.Color=col end
+                        end
+                    end
                 end
             end
+            -- spin whole model + each ring (3 PivotTos, not hundreds)
+            pcall(function()
+                bhModel:PivotTo(CFrame.Angles(math.rad(38), t0*0.3, math.rad(10)))
+                for _,r in ipairs(ringModels) do
+                    if r.m and r.m.PrimaryPart then
+                        r.m:PivotTo(bhModel:GetPivot() * CFrame.Angles(0, t0*r.speed, 0))
+                    end
+                end
+            end)
         end)
     end
 
@@ -3639,61 +3779,13 @@ local function buildSettingsPanel()
         local td=TL[i]
         local dot=new("TextButton",themeRow,{Size=UDim2.new(0,28,0,28),Position=UDim2.new(0,(i-1)*32,0,4),BackgroundColor3=td.ac,Text="",BorderSizePixel=0})
         corner(dot,14)
-        dot.MouseButton1Click:Connect(function() playSFX("click");themeIdx=i;apTh(td);updCards() end)
+        dot.MouseButton1Click:Connect(function() playSFX("click");themeIdx=i;apTh(td,true);updCards() end)
     end
     sy=sy+44
 
-    -- Theme Editor (customise every colour)
-    new("TextLabel",sScroll,{Size=UDim2.new(1,-16,0,18),Position=UDim2.new(0,8,0,sy),BackgroundTransparency=1,
-        Text="THEME EDITOR",TextColor3=T.txM,Font=Enum.Font.GothamBold,TextSize=11,TextXAlignment=Enum.TextXAlignment.Left});sy=sy+22
-    local themeKeys={
-        {k="ac",lbl="Accent"},
-        {k="bg",lbl="Background"},
-        {k="bgS",lbl="Sidebar"},
-        {k="bgT",lbl="Surface"},
-        {k="bd",lbl="Border"},
-        {k="off",lbl="Off / Track"},
-        {k="tx",lbl="Text"},
-        {k="txM",lbl="Text Muted"},
-        {k="txD",lbl="Text Dim"},
-    }
-    local themeSwatches={}
-    for _,tk in ipairs(themeKeys) do
-        local row=new("Frame",sScroll,{Size=UDim2.new(1,-16,0,28),Position=UDim2.new(0,8,0,sy),BackgroundColor3=T.bgT,BackgroundTransparency=0.3,BorderSizePixel=0})
-        corner(row,6)
-        new("TextLabel",row,{Size=UDim2.new(0.55,0,1,0),Position=UDim2.new(0,8,0,0),BackgroundTransparency=1,Text=tk.lbl,TextColor3=T.tx,Font=Enum.Font.Gotham,TextSize=11,TextXAlignment=Enum.TextXAlignment.Left})
-        local sw=new("Frame",row,{Size=UDim2.new(0,22,0,18),Position=UDim2.new(1,-56,0.5,-9),BackgroundColor3=T[tk.k] or T.ac,BorderSizePixel=0});corner(sw,4)
-        themeSwatches[tk.k]=sw
-        local btn=new("TextButton",row,{Size=UDim2.new(0,28,0,20),Position=UDim2.new(1,-30,0.5,-10),BackgroundColor3=T.off,Text="",BorderSizePixel=0});corner(btn,4)
-        mkIcon(btn,"pencil",12,{Position=UDim2.new(0.5,-6,0.5,-6),ImageColor3=T.tx,ZIndex=2})
-        btn.MouseButton1Click:Connect(function()
-            local key=tk.k
-            local current=T[key] or T.ac
-            if type(openColorPicker)~="function" then
-                showPopup("Theme","Colour picker not ready",T.wn)
-                return
-            end
-            openColorPicker(current,function(c)
-                if typeof(c)~="Color3" then return end
-                T[key]=c
-                if themeSwatches[key] then themeSwatches[key].BackgroundColor3=c end
-                local cur=TL[themeIdx]
-                if cur then
-                    local map={ac="ac",bg="bg",bgS="bS",bgT="bT",bd="bd",off="of",tx="tx",txM="tM",txD="tD"}
-                    local field=map[key]
-                    if field then cur[field]=c end
-                end
-                -- force live apply
-                apTh({
-                    ac=T.ac,bg=T.bg,bS=T.bgS,bT=T.bgT,bd=T.bd,of=T.off,
-                    tx=T.tx,tM=T.txM,tD=T.txD
-                })
-                showPopup("Theme",tk.lbl.." updated",T.ok)
-            end)
-        end)
-        sy=sy+32
-    end
-    sy=sy+8
+    -- Theme editor lives in Styling tab
+    new("TextLabel",sScroll,{Size=UDim2.new(1,-16,0,28),Position=UDim2.new(0,8,0,sy),BackgroundTransparency=1,
+        Text="Full colour editor is in the Styling tab",TextColor3=T.txD,Font=Enum.Font.Gotham,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left,TextWrapped=true});sy=sy+34
 
     -- Extra settings
     new("TextLabel",sScroll,{Size=UDim2.new(1,-16,0,18),Position=UDim2.new(0,8,0,sy),BackgroundTransparency=1,
@@ -4156,30 +4248,56 @@ if lightIco and lightIco:IsA("ImageLabel") then
     lightIco.ImageColor3=T.txM
 end
 local function applyLightMode(en)
-    S.lightMode=en
-    if en then
-        -- bright surface over current theme
-        T.bg=Color3.fromRGB(248,249,252);T.bgS=Color3.fromRGB(255,255,255);T.bgT=Color3.fromRGB(236,238,244)
-        T.bd=Color3.fromRGB(200,205,215);T.off=Color3.fromRGB(190,195,205)
-        T.tx=Color3.fromRGB(8,9,12);T.txM=Color3.fromRGB(45,48,58);T.txD=Color3.fromRGB(90,95,110)
-        T.txSel=Color3.fromRGB(0,0,0)
-    else
-        apTh(TL[themeIdx])
+    S.lightMode=en and true or false
+    if not S.lightMode then
+        -- full dark theme apply (explicitly drop light surfaces)
+        local td=TL[themeIdx] or TL[1]
+        -- temporary clear so apTh does not re-enter light branch
+        local was=S.lightMode
+        S.lightMode=false
+        apTh(td,false)
+        S.lightMode=false
+        if lightIco and lightIco:IsA("ImageLabel") then lightIco.ImageColor3=T.txM end
+        if lightLbl then lightLbl.TextColor3=T.txM end
         return
     end
-    -- push light colours into registered elements
+    -- light surfaces, keep current accent
+    local ac=T.ac
+    T.bg=Color3.fromRGB(248,249,252);T.bgS=Color3.fromRGB(255,255,255);T.bgT=Color3.fromRGB(236,238,244)
+    T.bd=Color3.fromRGB(200,205,215);T.off=Color3.fromRGB(190,195,205)
+    T.tx=Color3.fromRGB(18,20,28);T.txM=Color3.fromRGB(55,58,70);T.txD=Color3.fromRGB(110,115,130)
+    T.txSel=Color3.fromRGB(10,12,18)
+    T.ac=ac
     for _,r in ipairs(reg.bg) do if r[1] and r[1].Parent then r[1][r[2]]=T.bg end end
     for _,r in ipairs(reg.bS) do if r[1] and r[1].Parent then r[1][r[2]]=T.bgS end end
     for _,r in ipairs(reg.bT) do if r[1] and r[1].Parent then r[1][r[2]]=T.bgT end end
     for _,r in ipairs(reg.tx) do if r[1] and r[1].Parent then r[1][r[2]]=T.tx end end
     for _,r in ipairs(reg.tM) do if r[1] and r[1].Parent then r[1][r[2]]=T.txM end end
-    for _,ic in ipairs(reg.ico) do if ic[1] and ic[1].Parent then ic[1][ic[2]]=T.txM end end
-    if lightLbl and lightLbl.Parent then lightLbl.TextColor3=T.txM end
-    if userLbl and userLbl.Parent then userLbl.TextColor3=T.txM end
     for _,r in ipairs(reg.tD) do if r[1] and r[1].Parent then r[1][r[2]]=T.txD end end
+    for _,ic in ipairs(reg.ico) do if ic[1] and ic[1].Parent then ic[1][ic[2]]=T.txM end end
     for _,s in ipairs(reg.bd) do if s and s.Parent then s.Color=T.bd end end
-    if lightIco:IsA("ImageLabel") then lightIco.ImageColor3=T.wn end
-    lightLbl.TextColor3=T.tx
+    for _,r in ipairs(reg.tr) do if r[1] and r[1].Parent then r[1][r[2]]=T.off end end
+    for _,r in ipairs(reg.ac) do if r[1] and r[1].Parent then r[1][r[2]]=T.ac end end
+    for _,g in ipairs(reg.tog) do
+        if g.f and g.f.Parent then g.f.BackgroundColor3=g.on() end
+        if g.c and g.c.Parent then g.c.BackgroundColor3=g.cn() end
+    end
+    if _winGradRef and _winGradRef.Parent then
+        _winGradRef.Color=ColorSequence.new({
+            ColorSequenceKeypoint.new(0,T.bg),
+            ColorSequenceKeypoint.new(0.5,T.bgS),
+            ColorSequenceKeypoint.new(1,T.bgT)
+        })
+    end
+    refreshAccentLines()
+    refreshSidebarTheme()
+    if lightIco and lightIco:IsA("ImageLabel") then lightIco.ImageColor3=T.wn end
+    if lightLbl then lightLbl.TextColor3=T.tx end
+    if userLbl then userLbl.TextColor3=T.txM end
+    if sideGearLbl then sideGearLbl.TextColor3=T.txM end
+    for _,sf in ipairs(reg.sb) do if sf and sf.Parent then sf.ScrollBarImageColor3=T.ac end end
+    if S._layoutModePainters then for _,fn in ipairs(S._layoutModePainters) do pcall(fn) end end
+    if type(S._applyUiStyle)=="function" then pcall(function() S._applyUiStyle(S.uiStyle or "Solid",true) end) end
 end
 lightBtn.MouseButton1Click:Connect(function()
     playSFX("click")
@@ -4200,7 +4318,8 @@ local sideGearLbl=new("TextLabel",sideGear,{
     Size=UDim2.new(1,-44,1,0),Position=UDim2.new(0,40,0,0),BackgroundTransparency=1,
     Text="Settings",TextColor3=T.txM,Font=Enum.Font.Gotham,TextSize=12,
     TextXAlignment=Enum.TextXAlignment.Left,ZIndex=7
-})
+});ra("tM",sideGearLbl,"TextColor3")
+if sideGearIco and sideGearIco:IsA("ImageLabel") then table.insert(reg.ico,{sideGearIco,"ImageColor3"}) end
 sideGear.MouseButton1Click:Connect(function()
     playSFX("click")
     toggleSettings()
@@ -4963,8 +5082,8 @@ local function mkSL(par,y,txt)
     local ug=Instance.new("UIGradient")
     ug.Color=ColorSequence.new({
         ColorSequenceKeypoint.new(0,T.ac),
-        ColorSequenceKeypoint.new(0.5,Color3.new(1,1,1)),
-        ColorSequenceKeypoint.new(1,T.ac)
+        ColorSequenceKeypoint.new(0.45,Color3.new(math.min(1,T.ac.R*1.4),math.min(1,T.ac.G*1.4),math.min(1,T.ac.B*1.4))),
+        ColorSequenceKeypoint.new(1,Color3.new(T.ac.R*0.35,T.ac.G*0.35,T.ac.B*0.35))
     })
     ug.Parent=und
     task.defer(function()
@@ -5056,9 +5175,11 @@ local function mkTog(par,y,cfg)
         BackgroundColor3=T.off,BorderSizePixel=0});corner(tf,9)
     local ci=new("Frame",tf,{Size=UDim2.new(0,14,0,14),Position=UDim2.new(0,2,.5,-7),
         BackgroundColor3=T.txD,BorderSizePixel=0});corner(ci,7)
-    local en=cfg.default;local colRef=cfg.color
-    local function getCol() return colRef or T.ac end
+    local en=cfg.default
+    -- always live accent so theme switches update switches immediately
+    local function getCol() return T.ac end
     table.insert(reg.tog,{f=tf,c=ci,on=function() return en and getCol() or T.off end,cn=function() return en and T.bg or T.txD end})
+    ra("bT",c,"BackgroundColor3")
     local function refreshLabel()
         l.Text=baseLabel..keySuffix()
     end
@@ -5121,24 +5242,30 @@ local function mkTog(par,y,cfg)
     new("TextButton",tf,{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text=""}).MouseButton1Click:Connect(function() upd(not en) end)
     local clicker=new("TextButton",c,{Size=UDim2.new(1,-108,1,0),BackgroundTransparency=1,Text="",ZIndex=3})
     clicker.MouseButton1Click:Connect(function() upd(not en) end)
-    -- hover / press reactivity
+    -- hover (instant leave so fast mouse moves don't leave stuck state)
     local st0=c:FindFirstChildOfClass("UIStroke")
-    c.MouseEnter:Connect(function()
-        TwS:Create(c,TweenInfo.new(0.12),{BackgroundTransparency=0}):Play()
-        if st0 then TwS:Create(st0,TweenInfo.new(0.12),{Color=T.ac,Transparency=0.2}):Play() end
-        TwS:Create(l,TweenInfo.new(0.15),{TextColor3=T.ac}):Play()
-        pcall(function() playSFX("hover",0.06) end)
-    end)
-    c.MouseLeave:Connect(function()
-        TwS:Create(c,TweenInfo.new(0.12),{BackgroundTransparency=0.12}):Play()
-        if st0 then TwS:Create(st0,TweenInfo.new(0.12),{Color=T.bd,Transparency=0}):Play() end
-        TwS:Create(l,TweenInfo.new(0.15),{TextColor3=T.tx}):Play()
-    end)
+    local hovered=false
+    local function hoverOn()
+        hovered=true
+        c.BackgroundTransparency=0
+        if st0 then st0.Color=T.ac; st0.Transparency=0.2 end
+        l.TextColor3=T.ac
+    end
+    local function hoverOff()
+        hovered=false
+        c.BackgroundTransparency=0.12
+        if st0 then st0.Color=T.bd; st0.Transparency=0 end
+        l.TextColor3=T.tx
+    end
+    c.MouseEnter:Connect(hoverOn)
+    c.MouseLeave:Connect(hoverOff)
+    clicker.MouseEnter:Connect(hoverOn)
+    clicker.MouseLeave:Connect(hoverOff)
     clicker.MouseButton1Down:Connect(function()
-        TwS:Create(c,TweenInfo.new(0.06),{BackgroundTransparency=0.25}):Play()
+        if hovered then c.BackgroundTransparency=0.22 end
     end)
     clicker.MouseButton1Up:Connect(function()
-        TwS:Create(c,TweenInfo.new(0.08),{BackgroundTransparency=0}):Play()
+        if hovered then c.BackgroundTransparency=0 end
     end)
     upd(cfg.default,true)
     regFeature({label=baseLabel,frame=c,kind="toggle",set=upd,get=function() return en end,bindKey=cfg.bindKey,refreshLabel=refreshLabel,togRef=togRef})
@@ -5148,8 +5275,8 @@ end
 local function mkSl(par,y,cfg)
     local h=SL_H
     local c=new("Frame",par,{Size=UDim2.new(1,-PAD*2,0,h),Position=UDim2.new(0,PAD,0,y),
-        BackgroundColor3=T.bgT,BackgroundTransparency=0.12,BorderSizePixel=0})
-    corner(c,CORNER);mkStroke(c,T.bd,1)
+        BackgroundColor3=T.bgT,BackgroundTransparency=0.08,BorderSizePixel=0})
+    corner(c,CORNER);mkStroke(c,T.bd,1);ra("bT",c,"BackgroundColor3")
     local l=new("TextLabel",c,{Size=UDim2.new(.58,0,0,16),Position=UDim2.new(0,12,0,5),BackgroundTransparency=1,TextColor3=T.tx,
         Font=Enum.Font.Gotham,TextSize=12,Text=cfg.label,TextXAlignment=Enum.TextXAlignment.Left});ra("tx",l,"TextColor3")
     local vl2=new("TextLabel",c,{Size=UDim2.new(.42,-12,0,16),Position=UDim2.new(.58,0,0,5),BackgroundTransparency=1,
@@ -5183,11 +5310,24 @@ end
 local function mkBtn(par,y,txt,cb2,danger)
     local bg=danger and T.ng or T.bgT
     local b=new("TextButton",par,{Size=UDim2.new(1,-PAD*2,0,36),Position=UDim2.new(0,PAD,0,y),
-        BackgroundColor3=bg,BackgroundTransparency=0.12,TextColor3=T.tx,Font=Enum.Font.Gotham,TextSize=12,Text=txt,BorderSizePixel=0})
-    corner(b,CORNER);mkStroke(b,T.bd)
-    if not danger then ra("bT",b,"BackgroundColor3") end;ra("tx",b,"TextColor3")
-    b.MouseEnter:Connect(function() TwS:Create(b,TweenInfo.new(0.1),{BackgroundTransparency=0}):Play();playSFX("hover",0.1) end)
-    b.MouseLeave:Connect(function() TwS:Create(b,TweenInfo.new(0.1),{BackgroundTransparency=0.12}):Play() end)
+        BackgroundColor3=bg,BackgroundTransparency=0.08,TextColor3=T.tx,Font=Enum.Font.GothamMedium,TextSize=12,Text=txt,BorderSizePixel=0})
+    corner(b,CORNER)
+    local st=mkStroke(b,danger and T.ng or T.bd,1)
+    if not danger then ra("bT",b,"BackgroundColor3") end
+    ra("tx",b,"TextColor3")
+    b.MouseEnter:Connect(function()
+        b.BackgroundTransparency=0
+        b.BackgroundColor3=danger and T.ng or T.ac
+        b.TextColor3=Color3.fromRGB(255,255,255)
+        if st then st.Color=T.ac end
+        playSFX("hover",0.08)
+    end)
+    b.MouseLeave:Connect(function()
+        b.BackgroundTransparency=0.08
+        b.BackgroundColor3=danger and T.ng or T.bgT
+        b.TextColor3=T.tx
+        if st then st.Color=danger and T.ng or T.bd end
+    end)
     b.MouseButton1Click:Connect(function() playSFX("click");cb2() end)
     regFeature({label=txt,frame=b,kind="button"})
     return b
@@ -5196,8 +5336,8 @@ end
 -- Proper dropdown (replaces cycling button lists)
 local function mkDropdown(par,y,label,options,default,onChange)
     local wrap=new("Frame",par,{Size=UDim2.new(1,-PAD*2,0,52),Position=UDim2.new(0,PAD,0,y),BackgroundTransparency=1,ZIndex=5})
-    new("TextLabel",wrap,{Size=UDim2.new(1,0,0,14),Position=UDim2.new(0,0,0,0),BackgroundTransparency=1,
-        Text=label,TextColor3=T.txM,Font=Enum.Font.Gotham,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left})
+    local ddLbl=new("TextLabel",wrap,{Size=UDim2.new(1,0,0,14),Position=UDim2.new(0,0,0,0),BackgroundTransparency=1,
+        Text=label,TextColor3=T.txM,Font=Enum.Font.Gotham,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left});ra("tM",ddLbl,"TextColor3")
     local idx=1
     for i,o in ipairs(options) do if o==default then idx=i break end end
     local btn=new("TextButton",par,{
@@ -5327,7 +5467,13 @@ local function mkInputSet(par,y,placeholder,defaultText,onSet)
         Size=UDim2.new(0,64,1,0),Position=UDim2.new(1,-64,0,0),
         BackgroundColor3=T.ac,Text="Set",TextColor3=Color3.fromRGB(255,255,255),
         Font=Enum.Font.GothamBold,TextSize=12,BorderSizePixel=0
-    });corner(setBtn,CORNER)
+    });corner(setBtn,CORNER);ra("ac",setBtn,"BackgroundColor3")
+    setBtn.MouseEnter:Connect(function()
+        TwS:Create(setBtn,TweenInfo.new(0.1),{BackgroundColor3=Color3.new(math.min(1,T.ac.R*1.15),math.min(1,T.ac.G*1.15),math.min(1,T.ac.B*1.15))}):Play()
+    end)
+    setBtn.MouseLeave:Connect(function()
+        setBtn.BackgroundColor3=T.ac
+    end)
     setBtn.MouseButton1Click:Connect(function()
         playSFX("click")
         if onSet then onSet(box.Text,box) end
@@ -5336,8 +5482,8 @@ local function mkInputSet(par,y,placeholder,defaultText,onSet)
     return wrap,box
 end
 
-local tabs={"Move","Weapon","RPG","Vis","World","Player","Vehicle","Misc","Online","Layout"}
-local tabIcons={Move=ICO.Move,Weapon=ICO.Weapon,RPG=ICO.RPG,Vis=ICO.Vis,World="globe-2",Player=ICO.Player,Vehicle="settings-2",Misc=ICO.Misc,Online="globe",Layout=ICO.Layout}
+local tabs={"Move","Weapon","RPG","Vis","World","Player","Vehicle","Misc","Online","Styling"}
+local tabIcons={Move=ICO.Move,Weapon=ICO.Weapon,RPG=ICO.RPG,Vis=ICO.Vis,World="globe-2",Player=ICO.Player,Vehicle="settings-2",Misc=ICO.Misc,Online="globe",Styling=ICO.Layout}
 -- tabC already declared earlier
 local curTab=nil
 local tabW=mfl((WW-PAD*2-6)/#tabs)
@@ -5397,7 +5543,7 @@ for idx,name in ipairs(tabs) do
         Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,
         ScrollBarThickness=3,ScrollBarImageColor3=T.ac,ScrollBarImageTransparency=0.4,
         Visible=false,BorderSizePixel=0,CanvasSize=UDim2.new(0,0,0,0)
-    })
+    });raScroll(scroll)
 
     tabC[name]={topBtn=topBtn,sideBtn=sideBtn,sIco=sIco,sLbl=sLbl,sBg=sBg,scroll=scroll,xOff=xOff,w=tabW,sY=8+(idx-1)*(tabH+4),setIcoColor=setIcoColor,select=selectTab}
 
@@ -5453,6 +5599,38 @@ do
     curTab=nil
 end
 updateScrollPos()
+
+-- Theme → sidebar live refresh (called from apTh)
+S._themeSidebarRefresh = function()
+    if type(tabC)~="table" then return end
+    for name,t in pairs(tabC) do
+        if t then
+            local active=(curTab==name)
+            pcall(function()
+                if t.setIcoColor then t.setIcoColor(active and T.ac or T.txD) end
+                if t.sLbl and t.sLbl.Parent then t.sLbl.TextColor3=active and T.ac or T.txD end
+                if t.sBg and t.sBg.Parent then
+                    t.sBg.BackgroundColor3=T.ac
+                    t.sBg.BackgroundTransparency=active and 0.55 or 1
+                end
+                if t.topBtn and t.topBtn.Parent then
+                    t.topBtn.TextColor3=active and T.txSel or T.txD
+                end
+            end)
+        end
+    end
+    if sideIndicator and sideIndicator.Parent then sideIndicator.BackgroundColor3=T.ac end
+    if pill and pill.Parent then pill.BackgroundColor3=T.ac end
+    if lightLbl and lightLbl.Parent then lightLbl.TextColor3=S.lightMode and T.tx or T.txM end
+    if lightIco and lightIco.Parent and lightIco:IsA("ImageLabel") then
+        lightIco.ImageColor3=S.lightMode and T.wn or T.txM
+    end
+    if userLbl and userLbl.Parent then userLbl.TextColor3=T.txM end
+    if sideGearLbl and sideGearLbl.Parent then sideGearLbl.TextColor3=T.txM end
+    if sideGearIco and sideGearIco.Parent and sideGearIco:IsA("ImageLabel") then
+        sideGearIco.ImageColor3=T.txM
+    end
+end
 
 -- ===== M7-style hover expand sidebar =====
 local function setSideExpanded(exp)
@@ -7158,7 +7336,7 @@ function buildPlayer()
         elseif S.targetHudFrame then S.targetHudFrame.Visible=false end
     end});Y=Y+TOG_H+GAP
     local focusLbl=new("TextLabel",s,{Size=UDim2.new(1,-PAD*2,0,16),Position=UDim2.new(0,PAD,0,Y),BackgroundTransparency=1,
-        Text="Focused: none",TextColor3=T.txM,Font=Enum.Font.Gotham,TextSize=11,TextXAlignment=Enum.TextXAlignment.Left})
+        Text="Focused: none",TextColor3=T.txM,Font=Enum.Font.Gotham,TextSize=11,TextXAlignment=Enum.TextXAlignment.Left});ra("tM",focusLbl,"TextColor3")
     Y=Y+20
     local function refreshFocusLbl()
         local names={}
@@ -7203,12 +7381,12 @@ function buildPlayer()
         end
     end
     local focusList=new("ScrollingFrame",s,{Position=UDim2.new(0,PAD,0,Y),Size=UDim2.new(1,-PAD*2,0,120),
-        BackgroundColor3=T.bgS,ScrollBarThickness=3,ScrollBarImageColor3=T.ac,CanvasSize=UDim2.new(0,0,0,0),BorderSizePixel=0,BackgroundTransparency=0.1})
-    corner(focusList,8);mkStroke(focusList,T.bd);Y=Y+128
+        BackgroundColor3=T.bgS,ScrollBarThickness=3,ScrollBarImageColor3=T.ac,CanvasSize=UDim2.new(0,0,0,0),BorderSizePixel=0,BackgroundTransparency=0.05})
+    corner(focusList,8);mkStroke(focusList,T.bd);ra("bS",focusList,"BackgroundColor3");raScroll(focusList);Y=Y+128
     local function refFocusList()
         focusList:ClearAllChildren();local cy=4
         for _,p in ipairs(Players:GetPlayers()) do if p~=plr then
-            local row=new("Frame",focusList,{Size=UDim2.new(1,-8,0,32),Position=UDim2.new(0,4,0,cy),BackgroundColor3=T.bgT,BackgroundTransparency=0.2,BorderSizePixel=0})
+            local row=new("Frame",focusList,{Size=UDim2.new(1,-8,0,32),Position=UDim2.new(0,4,0,cy),BackgroundColor3=T.bgT,BackgroundTransparency=0.15,BorderSizePixel=0});ra("bT",row,"BackgroundColor3")
             corner(row,6)
             local img=new("ImageLabel",row,{Size=UDim2.new(0,24,0,24),Position=UDim2.new(0,6,0.5,-12),BackgroundTransparency=1,Image=getAvatarThumb(p.UserId,48)})
             corner(img,12)
@@ -7458,11 +7636,12 @@ local function buildMisc()
         local ico=mkIcon(card,ex.ico or "package",22,{
             Position=UDim2.new(0,12,0.5,-11),ImageColor3=T.ac,ZIndex=2
         })
-        new("TextLabel",card,{
+        local exLbl=new("TextLabel",card,{
             Size=UDim2.new(1,-50,1,0),Position=UDim2.new(0,42,0,0),BackgroundTransparency=1,
             Text=ex.n,TextColor3=T.tx,Font=Enum.Font.GothamBold,TextSize=12,
             TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd
-        })
+        });ra("tx",exLbl,"TextColor3")
+        if ico and ico:IsA("ImageLabel") then ra("ac",ico,"ImageColor3") end
         card.MouseEnter:Connect(function()
             TwS:Create(card,TweenInfo.new(0.1),{BackgroundTransparency=0}):Play()
             playSFX("hover",0.08)
@@ -7981,15 +8160,16 @@ local function buildThemeCard(s,td,i,CW,CH,CG,Y)
         corner(dot,5);new("UIStroke",dot,{Color=Color3.fromRGB(255,255,255),Thickness=0.5,Transparency=0.5})
     end
     local btn=new("TextButton",card,{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text="",ZIndex=5})
-    btn.MouseButton1Click:Connect(function() themeIdx=i;apTh(TL[i]) end)
+    btn.MouseButton1Click:Connect(function() themeIdx=i;apTh(TL[i],true);updCards() end)
     btn.MouseEnter:Connect(function() if i~=themeIdx then TwS:Create(sk,TweenInfo.new(0.1),{Color=td.ac,Transparency=0.1}):Play() end end)
     btn.MouseLeave:Connect(function() if i~=themeIdx then TwS:Create(sk,TweenInfo.new(0.1),{Color=Color3.fromRGB(35,35,50),Transparency=0.3}):Play() end end)
     reg.cards[i]={s=sk,n=nm,ic=nil}
 end
 
 local function buildLayout()
-    _curBuildTab="Layout"
-    local s=tabC["Layout"].scroll;s:ClearAllChildren();local Y=8
+    _curBuildTab="Styling"
+    S._layoutModePainters={}
+    local s=tabC["Styling"].scroll;s:ClearAllChildren();local Y=8
 
     -- ArrayList (moved from Misc)
 -- ArrayList style
@@ -8006,18 +8186,30 @@ local function buildLayout()
         local f=new("Frame",s,{Size=UDim2.new(1,-PAD*2,0,62),Position=UDim2.new(0,PAD,0,Y),
             BackgroundColor3=active and T.ac or T.bgT,
             BackgroundTransparency=active and 0.18 or 0.05,BorderSizePixel=0})
-        corner(f,CORNER);mkStroke(f,active and T.ac or T.bd)
-        if not active then ra("bT",f,"BackgroundColor3") end
-        local icoCol=active and Color3.fromRGB(255,255,255) or T.txM
-        mkIcon(f,iconName,20,{Position=UDim2.new(0,14,0.5,-10),ImageColor3=icoCol,ZIndex=2})
-        new("TextLabel",f,{Size=UDim2.new(1,-52,0,20),Position=UDim2.new(0,42,0,10),
+        corner(f,CORNER)
+        local mst=mkStroke(f,active and T.ac or T.bd)
+        local ico=mkIcon(f,iconName,20,{Position=UDim2.new(0,14,0.5,-10),ImageColor3=active and Color3.fromRGB(255,255,255) or T.txM,ZIndex=2})
+        local t1=new("TextLabel",f,{Size=UDim2.new(1,-52,0,20),Position=UDim2.new(0,42,0,10),
             BackgroundTransparency=1,Text=lbl,
             TextColor3=active and Color3.fromRGB(255,255,255) or T.tx,
             Font=Enum.Font.GothamBold,TextSize=12,TextXAlignment=Enum.TextXAlignment.Left})
-        new("TextLabel",f,{Size=UDim2.new(1,-52,0,14),Position=UDim2.new(0,42,0,32),
+        local t2=new("TextLabel",f,{Size=UDim2.new(1,-52,0,14),Position=UDim2.new(0,42,0,32),
             BackgroundTransparency=1,Text=desc,
             TextColor3=active and Color3.fromRGB(220,220,255) or T.txM,
             Font=Enum.Font.Gotham,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left})
+        local function paint()
+            local on=(S.navMode==mode)
+            f.BackgroundColor3=on and T.ac or T.bgT
+            f.BackgroundTransparency=on and 0.18 or 0.05
+            if mst then mst.Color=on and T.ac or T.bd end
+            if ico and ico:IsA("ImageLabel") then ico.ImageColor3=on and Color3.fromRGB(255,255,255) or T.txM end
+            t1.TextColor3=on and Color3.fromRGB(255,255,255) or T.tx
+            t2.TextColor3=on and Color3.fromRGB(230,230,255) or T.txM
+        end
+        table.insert(reg.tog,{f=f,c=nil,on=function() return (S.navMode==mode) and T.ac or T.bgT end,cn=function() return T.txD end})
+        -- theme hook
+        S._layoutModePainters=S._layoutModePainters or {}
+        table.insert(S._layoutModePainters,paint)
         local btn=new("TextButton",f,{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text=""})
         btn.MouseButton1Click:Connect(function()
             setNavMode(mode);buildLayout()
@@ -8027,38 +8219,160 @@ local function buildLayout()
     mkModeBtn("panel-top","Top Bar","Pill navigation at the top of the window","top")
     mkModeBtn("panel-left","Side Bar","Icon navigation on the left side","side")
     mkSL(s,Y,"Window Material");Y=Y+SEC_H+GAP
+    local liquidConn=nil
+    local liquidGrad=nil
+    local function stopLiquidFx()
+        if liquidConn then liquidConn:Disconnect();liquidConn=nil end
+    end
+    local function ensureLiquidGrad(parent)
+        if not parent then return nil end
+        local g=parent:FindFirstChild("CH_LiquidGrad")
+        if not g then
+            g=Instance.new("UIGradient")
+            g.Name="CH_LiquidGrad"
+            g.Rotation=25
+            g.Parent=parent
+        end
+        return g
+    end
     local function applyUiStyle(style,skipNotif)
         S.uiStyle=style or S.uiStyle or "Solid"
-        -- NEVER blur whole Lighting — only style the menu frame
+        stopLiquidFx()
         pcall(function()
             local blur=Li:FindFirstChild("CH_UIBlur")
             if blur then blur:Destroy() end
             local base=(S.winTrans or winTrans or 18)/100
-            -- material adds a bit of extra see-through on top of slider
             local extra=0
             local col=T.bg
             if S.uiStyle=="Acrylic" then extra=0.12; col=T.bg
-            elseif S.uiStyle=="Glass" then extra=0.22; col=Color3.fromRGB(18,20,28)
+            elseif S.uiStyle=="Glass" then extra=0.22; col=S.lightMode and Color3.fromRGB(240,242,248) or Color3.fromRGB(18,20,28)
             elseif S.uiStyle=="Mica" then extra=0.08; col=T.bgS
-            elseif S.uiStyle=="Liquid" then extra=0.18; col=T.bgT
+            elseif S.uiStyle=="Liquid" then extra=0.14; col=T.bg
             else extra=0; col=T.bg end
             local tr=math.clamp(base+extra,0,0.92)
             if win then
                 win.BackgroundColor3=col
                 win.BackgroundTransparency=tr
             end
+            -- chrome surfaces
+            local chromeTr = (S.uiStyle=="Glass" and 0.25) or (S.uiStyle=="Liquid" and 0.2) or (S.uiStyle=="Acrylic" and 0.12) or 0.06
+            if hdr then
+                hdr.BackgroundColor3=T.bgS
+                hdr.BackgroundTransparency=chromeTr
+            end
+            if sideNav then
+                sideNav.BackgroundColor3=T.bgS
+                sideNav.BackgroundTransparency=(S.uiStyle=="Liquid" or S.uiStyle=="Glass") and chromeTr or 0
+            end
             if shadow then
                 shadow.BackgroundTransparency=math.clamp(tr+0.15,0,0.95)
             end
             if winStroke then
-                if S.uiStyle=="Glass" or S.uiStyle=="Liquid" then
+                if S.uiStyle=="Glass" then
                     winStroke.Transparency=0.25;winStroke.Thickness=1.2;winStroke.Color=Color3.fromRGB(180,200,255)
+                elseif S.uiStyle=="Liquid" then
+                    winStroke.Transparency=0.2;winStroke.Thickness=1.4;winStroke.Color=T.ac
                 elseif S.uiStyle=="Acrylic" then
                     winStroke.Transparency=0.4;winStroke.Thickness=1;winStroke.Color=T.ac
                 elseif S.uiStyle=="Mica" then
                     winStroke.Transparency=0.45;winStroke.Thickness=0.8;winStroke.Color=T.bd
                 else
                     winStroke.Transparency=0.5;winStroke.Thickness=0.5;winStroke.Color=T.bd
+                end
+            end
+            -- Liquid: reactive gradient on win + sidebar + titlebar following mouse
+            if S.uiStyle=="Liquid" then
+                -- soft spotlight that follows the mouse (no click FX)
+                for _,p in ipairs({win,sideNav,hdr}) do
+                    if p then
+                        for _,ch in ipairs(p:GetChildren()) do
+                            if ch.Name=="CH_LiquidBlob" or ch.Name=="CH_Ripple" or ch.Name=="CH_LiquidGrad" then ch:Destroy() end
+                        end
+                    end
+                end
+                local spots={}
+                local function mkSpot(parent, size, baseAlpha)
+                    if not parent then return end
+                    local f=Instance.new("Frame")
+                    f.Name="CH_LiquidBlob"
+                    f.BackgroundColor3=T.ac
+                    f.BackgroundTransparency=baseAlpha or 0.72
+                    f.BorderSizePixel=0
+                    f.Size=UDim2.fromOffset(size,size)
+                    f.AnchorPoint=Vector2.new(0.5,0.5)
+                    f.Position=UDim2.fromScale(0.5,0.5)
+                    f.ZIndex=0
+                    f.Parent=parent
+                    Instance.new("UICorner",f).CornerRadius=UDim.new(1,0)
+                    local g=Instance.new("UIGradient")
+                    g.Transparency=NumberSequence.new({
+                        NumberSequenceKeypoint.new(0,0.05),
+                        NumberSequenceKeypoint.new(0.35,0.45),
+                        NumberSequenceKeypoint.new(1,1)
+                    })
+                    g.Parent=f
+                    local st=Instance.new("UIStroke")
+                    st.Name="GlowStroke"
+                    st.Color=T.ac
+                    st.Thickness=2.5
+                    st.Transparency=0.55
+                    st.Parent=f
+                    local ug=ensureLiquidGrad(parent)
+                    spots[#spots+1]={gui=f,grad=ug,stroke=st,x=0.5,y=0.5,parent=parent,size=size,base=baseAlpha or 0.72,phase=math.random()*6.28}
+                end
+                mkSpot(win, 160, 0.55)
+                mkSpot(win, 280, 0.78)
+                mkSpot(sideNav, 140, 0.6)
+                mkSpot(hdr, 200, 0.7)
+                local pulse=0
+                liquidConn=RS.RenderStepped:Connect(function(dt)
+                    if S.uiStyle~="Liquid" then return end
+                    pulse=(pulse+dt*2.2)%6.28318
+                    local mp=UIS:GetMouseLocation()
+                    local inset=Vector2.zero
+                    pcall(function() inset=game:GetService("GuiService"):GetGuiInset() end)
+                    local mx,my=mp.X-inset.X, mp.Y-inset.Y
+                    local a=math.clamp(12*dt,0,1)
+                    for _,s in ipairs(spots) do
+                        local gui,par=s.gui,s.parent
+                        if gui and par and par.Parent and par.AbsoluteSize.X>0 then
+                            local tx=math.clamp((mx-par.AbsolutePosition.X)/par.AbsoluteSize.X,0,1)
+                            local ty=math.clamp((my-par.AbsolutePosition.Y)/par.AbsoluteSize.Y,0,1)
+                            s.x=s.x+(tx-s.x)*a
+                            s.y=s.y+(ty-s.y)*a
+                            local breathe=1+0.06*math.sin(pulse+s.phase)
+                            gui.Position=UDim2.fromScale(s.x,s.y)
+                            gui.Size=UDim2.fromOffset(s.size*breathe, s.size*breathe)
+                            gui.BackgroundColor3=T.ac
+                            gui.BackgroundTransparency=math.clamp(s.base - 0.08*math.sin(pulse*1.3+s.phase), 0.35, 0.92)
+                            if s.stroke then
+                                s.stroke.Color=T.ac
+                                s.stroke.Transparency=0.4+0.25*math.sin(pulse+s.phase)
+                                s.stroke.Thickness=2+1.5*math.abs(math.sin(pulse*0.8+s.phase))
+                            end
+                            if s.grad and s.grad.Parent then
+                                s.grad.Offset=Vector2.new((s.x-0.5)*0.55,(s.y-0.5)*0.55)
+                                s.grad.Rotation=20+(s.x-0.5)*40
+                                local hot=Color3.new(
+                                    math.min(1,T.ac.R*0.55+T.bg.R*0.45),
+                                    math.min(1,T.ac.G*0.55+T.bg.G*0.45),
+                                    math.min(1,T.ac.B*0.55+T.bg.B*0.45))
+                                s.grad.Color=ColorSequence.new({
+                                    ColorSequenceKeypoint.new(0,T.bg),
+                                    ColorSequenceKeypoint.new(0.45,T.bgT),
+                                    ColorSequenceKeypoint.new(1,hot)
+                                })
+                            end
+                        end
+                    end
+                end)
+            else
+                for _,p in ipairs({win,sideNav,hdr}) do
+                    if p then
+                        for _,ch in ipairs(p:GetChildren()) do
+                            if ch.Name=="CH_LiquidBlob" or ch.Name=="CH_Ripple" or ch.Name=="CH_LiquidGrad" then ch:Destroy() end
+                        end
+                    end
                 end
             end
         end)
@@ -8069,7 +8383,92 @@ local function buildLayout()
     for _,stName in ipairs({"Solid","Acrylic","Glass","Mica","Liquid"}) do
         mkBtn(s,Y,stName.." Material",function() applyUiStyle(stName) end);Y=Y+TOG_H+GAP
     end
-    mkSL(s,Y,"Config");Y=Y+SEC_H+GAP
+
+    mkSL(s,Y,"Custom Theme");Y=Y+SEC_H+GAP
+    new("TextLabel",s,{Size=UDim2.new(1,-PAD*2,0,28),Position=UDim2.new(0,PAD,0,Y),BackgroundTransparency=1,
+        Text="Edits always go to the Custom theme. Load a preset below, then tweak colours.",
+        TextColor3=T.txD,Font=Enum.Font.Gotham,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left,TextWrapped=true})
+    Y=Y+30
+    -- ensure Custom selected when opening editor controls
+    local function ensureCustom()
+        local ci=customThemeIdx()
+        if themeIdx~=ci then
+            themeIdx=ci
+            apTh(TL[ci], true)
+            updCards()
+        end
+        return TL[ci]
+    end
+    local themeKeys={
+        {k="ac",lbl="Accent"},
+        {k="bg",lbl="Background"},
+        {k="bgS",lbl="Sidebar"},
+        {k="bgT",lbl="Surface"},
+        {k="bd",lbl="Border"},
+        {k="off",lbl="Off / Track"},
+        {k="tx",lbl="Text"},
+        {k="txM",lbl="Text Muted"},
+        {k="txD",lbl="Text Dim"},
+    }
+    local themeSwatches={}
+    for _,tk in ipairs(themeKeys) do
+        local row=new("Frame",s,{Size=UDim2.new(1,-PAD*2,0,32),Position=UDim2.new(0,PAD,0,Y),BackgroundColor3=T.bgT,BackgroundTransparency=0.08,BorderSizePixel=0})
+        corner(row,CORNER);mkStroke(row,T.bd,1);ra("bT",row,"BackgroundColor3")
+        local lbl=new("TextLabel",row,{Size=UDim2.new(0.55,0,1,0),Position=UDim2.new(0,12,0,0),BackgroundTransparency=1,Text=tk.lbl,TextColor3=T.tx,Font=Enum.Font.Gotham,TextSize=12,TextXAlignment=Enum.TextXAlignment.Left})
+        ra("tx",lbl,"TextColor3")
+        local sw=new("Frame",row,{Size=UDim2.new(0,24,0,18),Position=UDim2.new(1,-72,0.5,-9),BackgroundColor3=T[tk.k] or T.ac,BorderSizePixel=0});corner(sw,4)
+        themeSwatches[tk.k]=sw
+        local btn=new("TextButton",row,{Size=UDim2.new(0,36,0,22),Position=UDim2.new(1,-42,0.5,-11),BackgroundColor3=T.off,Text="",BorderSizePixel=0});corner(btn,6);ra("tr",btn,"BackgroundColor3")
+        mkIcon(btn,"pencil",12,{Position=UDim2.new(0.5,-6,0.5,-6),ImageColor3=T.tx,ZIndex=2})
+        btn.MouseButton1Click:Connect(function()
+            local key=tk.k
+            local custom=ensureCustom()
+            local current=T[key] or T.ac
+            if type(openColorPicker)~="function" then return end
+            openColorPicker(current,function(c)
+                if typeof(c)~="Color3" then return end
+                T[key]=c
+                if themeSwatches[key] then themeSwatches[key].BackgroundColor3=c end
+                local map={ac="ac",bg="bg",bgS="bS",bgT="bT",bd="bd",off="of",tx="tx",txM="tM",txD="tD"}
+                local field=map[key]
+                if field and custom then custom[field]=c end
+                custom.d="Custom"
+                apTh({ac=T.ac,bg=T.bg,bS=T.bgS,bT=T.bgT,bd=T.bd,of=T.off,tx=T.tx,tM=T.txM,tD=T.txD}, true)
+                -- no popup spam
+            end)
+        end)
+        Y=Y+36
+    end
+    Y=Y+4
+    mkSL(s,Y,"Load Preset → Custom");Y=Y+SEC_H+GAP
+    local presetNames={}
+    for i,t in ipairs(TL) do
+        if t.n~="Custom" then presetNames[#presetNames+1]=t.n end
+    end
+    mkDropdown(s,Y,"Preset",presetNames,presetNames[1] or "Proxy",function(v)
+        for i,t in ipairs(TL) do
+            if t.n==v then
+                applyPresetToCustom(i, true)
+                -- refresh swatches
+                local c=TL[customThemeIdx()]
+                for _,tk in ipairs(themeKeys) do
+                    local map={ac="ac",bg="bg",bgS="bS",bgT="bT",bd="bd",off="of",tx="tx",txM="tM",txD="tD"}
+                    local field=map[tk.k]
+                    if themeSwatches[tk.k] and field and c[field] then
+                        themeSwatches[tk.k].BackgroundColor3=c[field]
+                    end
+                end
+                showPopup("Custom","Preset · "..v,T.ok)
+                break
+            end
+        end
+    end);Y=Y+56+GAP
+    mkBtn(s,Y,"Switch to Custom Theme",function()
+        ensureCustom()
+        showPopup("Theme","Custom active",T.ok)
+    end);Y=Y+TOG_H+GAP
+
+    mkSL(s,Y,"Config");Y=Y+SEC_H+GAP    mkSL(s,Y,"Config");Y=Y+SEC_H+GAP
     mkBtn(s,Y,"Save Config",function()
         CHSaveSettings()
         showPopup("Config","Saved all settings",T.ok)
@@ -8912,7 +9311,7 @@ arrayListFrame=new("Frame",sg,{
     AnchorPoint=Vector2.new(1,1),
     Position=UDim2.new(1,-14,1,-14),
     BackgroundColor3=T.bg,
-    BackgroundTransparency=0.85,ZIndex=60,Visible=S.arrayListOn~=false
+    BackgroundTransparency=1,ZIndex=60,Visible=S.arrayListOn~=false
 })
 makeDraggable(arrayListFrame)
 local arrayListLabels={}
@@ -9079,15 +9478,13 @@ task.spawn(function()
     end)
 end)
 
--- Changelog popout with "Don't show again"
-do
-    task.wait(1.2)
+-- Changelog (shown after splash finishes)
+local function showChangelogAfterLoad()
     local skip=false
     pcall(function()
         if isfile and isfile("CHUDHUB_changelog_v1.hide") then skip=true end
     end)
-    if skip then
-        -- still select Move tab
+    local function selectMoveTab()
         if tabC["Move"] then
             local o=tabC["Move"]
             o.scroll.Visible=true; curTab="Move"
@@ -9098,68 +9495,54 @@ do
             if sideIndicator then sideIndicator.Visible=true; sideIndicator.Position=UDim2.new(0,0,0,o.sY+8) end
             if contTitle then contTitle.Text=">_  move" end
         end
-    else
-        local dontShow=false
-        local pop=new("Frame",sg,{Size=UDim2.new(0,420,0,400),AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.new(0.5,0,0.5,0),
-            BackgroundColor3=T.bg,BackgroundTransparency=0.1,BorderSizePixel=0,ZIndex=70})
-        corner(pop,8);mkStroke(pop,T.ac,1.5)
-        new("TextLabel",pop,{Size=UDim2.new(1,0,0,28),Position=UDim2.new(0,0,0,10),BackgroundTransparency=1,Text="★ What's New · "..CH_VERSION,TextColor3=T.ac,Font=Enum.Font.GothamBold,TextSize=16,TextXAlignment=Enum.TextXAlignment.Center})
-
-        local content=new("ScrollingFrame",pop,{Size=UDim2.new(1,-24,1,-110),Position=UDim2.new(0,12,0,42),BackgroundTransparency=1,ScrollBarThickness=3,ScrollBarImageColor3=T.ac,CanvasSize=UDim2.new(0,0,0,0),BorderSizePixel=0})
-        local cy=8
-        local function addLine(txt,bold)
-            new("TextLabel",content,{Size=UDim2.new(1,0,0,18),Position=UDim2.new(0,8,0,cy),BackgroundTransparency=1,Text=(bold and "• " or "  ")..txt,TextColor3=bold and T.ac or T.txM,Font=bold and Enum.Font.GothamBold or Enum.Font.Gotham,TextSize=11,TextXAlignment=Enum.TextXAlignment.Left})
-            cy=cy+20
-        end
-        addLine("ChudHub "..CH_VERSION,true)
-        addLine("Kill log + hitlist + join alerts",true)
-        addLine("Anti-RPG (health lock) + exploiter alerts",true)
-        addLine("Vehicle stealer / RPG grab until found",true)
-        addLine("Bhop snappy mode + speed/jump controls",true)
-        addLine("Skeleton ESP improved · ESP transparency",true)
-        addLine("Radar styles · streamer mode (WT boards)",true)
-        addLine("Menu materials (Acrylic/Glass/Mica/Liquid)",true)
-        addLine("Clock lock without flicker · soft character refresh",true)
-        addLine("Streamproof reparent · focus mode / target HUD",true)
-        addLine("Discord sidebar · themes · keybinds · pins",true)
-        addLine("RPG patterns, arraylist, performance mode",true)
-        content.CanvasSize=UDim2.new(0,0,0,cy+10)
-
-        -- Don't show again checkbox
-        local checkRow=new("Frame",pop,{Size=UDim2.new(1,-40,0,22),Position=UDim2.new(0,20,1,-78),BackgroundTransparency=1})
-        local box=new("Frame",checkRow,{Size=UDim2.new(0,16,0,16),Position=UDim2.new(0,0,0.5,-8),BackgroundColor3=T.bgT,BorderSizePixel=0})
-        corner(box,4);mkStroke(box,T.bd)
-        local mark=new("TextLabel",box,{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text="",TextColor3=T.ac,Font=Enum.Font.GothamBold,TextSize=12})
-        new("TextLabel",checkRow,{Size=UDim2.new(1,-24,1,0),Position=UDim2.new(0,24,0,0),BackgroundTransparency=1,Text="Don't show again",TextColor3=T.txM,Font=Enum.Font.Gotham,TextSize=12,TextXAlignment=Enum.TextXAlignment.Left})
-        local chkBtn=new("TextButton",checkRow,{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text=""})
-        chkBtn.MouseButton1Click:Connect(function()
-            dontShow=not dontShow
-            mark.Text=dontShow and "✓" or ""
-            box.BackgroundColor3=dontShow and T.ac or T.bgT
-            playSFX("click",0.15)
-        end)
-
-        local gotIt=new("TextButton",pop,{Size=UDim2.new(0.6,0,0,32),Position=UDim2.new(0.2,0,1,-42),BackgroundColor3=T.ac,Text="Got it — Let's go!",TextColor3=T.bg,Font=Enum.Font.GothamBold,TextSize=13,BorderSizePixel=0})
-        corner(gotIt,CORNER)
-        gotIt.MouseButton1Click:Connect(function()
-            if dontShow then
-                pcall(function() if writefile then writefile("CHUDHUB_changelog_v1.hide","1") end end)
-            end
-            pop:Destroy()
-            for _,tname in ipairs(tabs) do if tabC[tname] then tabC[tname].scroll.Visible=false end end
-            if tabC["Move"] then
-                local o=tabC["Move"]
-                o.scroll.Visible=true; curTab="Move"
-                if o.setIcoColor then o.setIcoColor(T.ac)
-                elseif o.sIco:IsA("ImageLabel") then o.sIco.ImageColor3=T.ac
-                else o.sIco.TextColor3=T.ac end
-                o.sLbl.TextColor3=T.ac; o.sBg.BackgroundTransparency=0.55
-                if sideIndicator then sideIndicator.Visible=true; sideIndicator.Position=UDim2.new(0,0,0,o.sY+8) end
-                if contTitle then contTitle.Text=">_  move" end
-            end
-        end)
     end
+    if skip then selectMoveTab(); return end
+    local dontShow=false
+    local pop=new("Frame",sg,{Size=UDim2.new(0,420,0,400),AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.new(0.5,0,0.5,0),
+        BackgroundColor3=T.bg,BackgroundTransparency=0.1,BorderSizePixel=0,ZIndex=70})
+    corner(pop,8);mkStroke(pop,T.ac,1.5)
+    new("TextLabel",pop,{Size=UDim2.new(1,0,0,28),Position=UDim2.new(0,0,0,10),BackgroundTransparency=1,Text="★ What's New · "..CH_VERSION,TextColor3=T.ac,Font=Enum.Font.GothamBold,TextSize=16,TextXAlignment=Enum.TextXAlignment.Center})
+    local content=new("ScrollingFrame",pop,{Size=UDim2.new(1,-24,1,-110),Position=UDim2.new(0,12,0,42),BackgroundTransparency=1,ScrollBarThickness=3,ScrollBarImageColor3=T.ac,CanvasSize=UDim2.new(0,0,0,0),BorderSizePixel=0})
+    local cy=8
+    local function addLine(txt,bold)
+        new("TextLabel",content,{Size=UDim2.new(1,0,0,18),Position=UDim2.new(0,8,0,cy),BackgroundTransparency=1,Text=(bold and "• " or "  ")..txt,TextColor3=bold and T.ac or T.txM,Font=bold and Enum.Font.GothamBold or Enum.Font.Gotham,TextSize=11,TextXAlignment=Enum.TextXAlignment.Left})
+        cy=cy+20
+    end
+    addLine("ChudHub "..CH_VERSION,true)
+    addLine("Kill log + hitlist + join alerts",true)
+    addLine("Anti-RPG (health lock) + exploiter alerts",true)
+    addLine("Vehicle stealer / RPG grab until found",true)
+    addLine("Bhop snappy mode + speed/jump controls",true)
+    addLine("Skeleton ESP improved · ESP transparency",true)
+    addLine("Radar styles · streamer mode (WT boards)",true)
+    addLine("Menu materials (Acrylic/Glass/Mica/Liquid)",true)
+    addLine("Clock lock without flicker · soft character refresh",true)
+    addLine("Streamproof reparent · focus mode / target HUD",true)
+    addLine("Discord sidebar · themes · keybinds · pins",true)
+    addLine("RPG patterns, arraylist, performance mode",true)
+    content.CanvasSize=UDim2.new(0,0,0,cy+10)
+    local checkRow=new("Frame",pop,{Size=UDim2.new(1,-40,0,22),Position=UDim2.new(0,20,1,-78),BackgroundTransparency=1})
+    local box=new("Frame",checkRow,{Size=UDim2.new(0,16,0,16),Position=UDim2.new(0,0,0.5,-8),BackgroundColor3=T.bgT,BorderSizePixel=0})
+    corner(box,4);mkStroke(box,T.bd)
+    local mark=new("TextLabel",box,{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text="",TextColor3=T.ac,Font=Enum.Font.GothamBold,TextSize=12})
+    new("TextLabel",checkRow,{Size=UDim2.new(1,-24,1,0),Position=UDim2.new(0,24,0,0),BackgroundTransparency=1,Text="Don't show again",TextColor3=T.txM,Font=Enum.Font.Gotham,TextSize=12,TextXAlignment=Enum.TextXAlignment.Left})
+    local chkBtn=new("TextButton",checkRow,{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text=""})
+    chkBtn.MouseButton1Click:Connect(function()
+        dontShow=not dontShow
+        mark.Text=dontShow and "✓" or ""
+        box.BackgroundColor3=dontShow and T.ac or T.bgT
+        playSFX("click",0.15)
+    end)
+    local gotIt=new("TextButton",pop,{Size=UDim2.new(0.6,0,0,32),Position=UDim2.new(0.2,0,1,-42),BackgroundColor3=T.ac,Text="Got it — Let's go!",TextColor3=T.bg,Font=Enum.Font.GothamBold,TextSize=13,BorderSizePixel=0})
+    corner(gotIt,CORNER)
+    gotIt.MouseButton1Click:Connect(function()
+        if dontShow then pcall(function() if writefile then writefile("CHUDHUB_changelog_v1.hide","1") end end) end
+        pop:Destroy()
+        for _,tname in ipairs(tabs) do if tabC[tname] then tabC[tname].scroll.Visible=false end end
+        selectMoveTab()
+    end)
 end
+S._showChangelog = showChangelogAfterLoad
 
 UIS.InputBegan:Connect(function(inp,gp)
     if S.dead then return end
@@ -9251,14 +9634,26 @@ UIS.InputEnded:Connect(function(inp)
 end)
 
 local function runSplash()
+    local dim=new("Frame",sg,{
+        Size=UDim2.new(1,0,1,0),BackgroundColor3=Color3.new(0,0,0),
+        BackgroundTransparency=0.35,BorderSizePixel=0,ZIndex=49
+    })
     local splash=new("Frame",sg,{
-        Size=UDim2.new(0,340,0,400),
+        Size=UDim2.new(0,380,0,460),
         AnchorPoint=Vector2.new(.5,.5),
         Position=UDim2.new(.5,0,.5,0),
-        BackgroundColor3=T.bg,BackgroundTransparency=0.18,
+        BackgroundColor3=T.bg,BackgroundTransparency=0.08,
         BorderSizePixel=0,ZIndex=50
-    });corner(splash,8)
-    new("UIStroke",splash,{Color=T.ac,Thickness=0.4,Transparency=0.5})
+    });corner(splash,14)
+    local spStroke=new("UIStroke",splash,{Color=T.ac,Thickness=1.2,Transparency=0.35})
+    local spGrad=Instance.new("UIGradient")
+    spGrad.Color=ColorSequence.new({
+        ColorSequenceKeypoint.new(0,T.bg),
+        ColorSequenceKeypoint.new(0.55,T.bgS),
+        ColorSequenceKeypoint.new(1,Color3.new(math.min(1,T.ac.R*0.25+T.bg.R*0.75),math.min(1,T.ac.G*0.25+T.bg.G*0.75),math.min(1,T.ac.B*0.25+T.bg.B*0.75)))
+    })
+    spGrad.Rotation=140
+    spGrad.Parent=splash
 
     local function mk(cls,par,props)
         local o=Instance.new(cls)
@@ -9269,137 +9664,363 @@ local function runSplash()
         return o
     end
 
-    local starOuter=mk("TextLabel",splash,{
-        Size=UDim2.new(0,220,0,220),
+    -- ===== Logo: purple→black radial + 3D black hole with rings =====
+    local starHost=mk("Frame",splash,{
+        Size=UDim2.new(0,140,0,140),
         AnchorPoint=Vector2.new(.5,.5),
-        Position=UDim2.new(.5,0,.38,0),
-        BackgroundTransparency=1,BorderSizePixel=0,ZIndex=51,
-        Text="☆",Font=Enum.Font.GothamBlack,TextSize=190,
-        TextColor3=Color3.fromRGB(255,255,255),
-        TextXAlignment=Enum.TextXAlignment.Center,
-        TextYAlignment=Enum.TextYAlignment.Center,
-        TextTransparency=1
+        Position=UDim2.new(.5,0,.30,0),
+        BackgroundTransparency=1,BorderSizePixel=0,ZIndex=51
     })
-    local starMid=starOuter
-    local starInner=starOuter
+    local logoBadge=mk("Frame",starHost,{
+        Size=UDim2.new(1,0,1,0),
+        BackgroundColor3=Color3.fromRGB(6,4,12),
+        BorderSizePixel=0,ZIndex=50
+    })
+    logoBadge.BackgroundTransparency=1
+    logoBadge.ClipsDescendants=true
+    corner(logoBadge,30)
+    local badgeStroke=new("UIStroke",logoBadge,{Color=T.ac,Thickness=1.5,Transparency=1})
+
+    local glowRing
+    local radialLayers={}
+    do
+        local base=mk("Frame",logoBadge,{
+            Size=UDim2.new(0.96,0,0.96,0),
+            Position=UDim2.new(0.5,0,0.5,0),
+            AnchorPoint=Vector2.new(0.5,0.5),
+            BackgroundColor3=Color3.fromRGB(0,0,0),
+            BorderSizePixel=0,ZIndex=49
+        })
+        base.BackgroundTransparency=1
+        base:SetAttribute("TargetT", 0.15)
+        base:SetAttribute("GradK", 0)
+        corner(base,999)
+        radialLayers[#radialLayers+1]=base
+
+        local N=28
+        for i=1,N do
+            local k=i/N
+            local size=0.96 * (1 - (i-1)/N * 0.88)
+            local sm=k*k*(3-2*k)
+            local col=Color3.new(
+                math.min(1, T.ac.R * sm * 1.15),
+                math.min(1, T.ac.G * sm * 1.05),
+                math.min(1, T.ac.B * sm * 1.25)
+            )
+            local alpha=math.clamp(0.92 - sm*0.78, 0.08, 0.94)
+            local disc=mk("Frame",logoBadge,{
+                Size=UDim2.new(size,0,size,0),
+                Position=UDim2.new(0.5,0,0.5,0),
+                AnchorPoint=Vector2.new(0.5,0.5),
+                BackgroundColor3=col,
+                BorderSizePixel=0,ZIndex=50
+            })
+            disc.BackgroundTransparency=1
+            disc:SetAttribute("TargetT", alpha)
+            disc:SetAttribute("GradK", k)
+            corner(disc,999)
+            radialLayers[#radialLayers+1]=disc
+            if i==math.floor(N*0.4) then glowRing=disc end
+        end
+        if not glowRing then glowRing=radialLayers[2] end
+        local pin=mk("Frame",logoBadge,{
+            Size=UDim2.new(0.16,0,0.16,0),
+            Position=UDim2.new(0.5,0,0.5,0),
+            AnchorPoint=Vector2.new(0.5,0.5),
+            BackgroundColor3=Color3.fromRGB(255,245,255),
+            BorderSizePixel=0,ZIndex=51
+        })
+        pin.BackgroundTransparency=1
+        pin:SetAttribute("TargetT", 0.4)
+        pin:SetAttribute("GradK", 1.2)
+        corner(pin,999)
+        radialLayers[#radialLayers+1]=pin
+    end
+
+    -- 3D black hole viewport (segmented torus rings + flowing glow)
+    -- 3D black hole viewport (lightweight segmented rings)
+    local vp=Instance.new("ViewportFrame")
+    vp.Size=UDim2.new(0.92,0,0.92,0)
+    vp.Position=UDim2.new(0.5,0,0.5,0)
+    vp.AnchorPoint=Vector2.new(0.5,0.5)
+    vp.BackgroundTransparency=1
+    vp.BorderSizePixel=0
+    vp.ZIndex=53
+    vp.Ambient=Color3.fromRGB(5,3,12)
+    vp.LightColor=Color3.fromRGB(255,235,255)
+    vp.LightDirection=Vector3.new(0.2,-0.9,-0.3)
+    vp.Parent=logoBadge
+    local vcam=Instance.new("Camera")
+    vcam.FieldOfView=26
+    vcam.Parent=vp
+    vp.CurrentCamera=vcam
+    local world=Instance.new("WorldModel")
+    world.Parent=vp
+    local bhModel=Instance.new("Model")
+    bhModel.Name="SplashBlackHole"
+    bhModel.Parent=world
+
+    local horizon=Instance.new("Part")
+    horizon.Anchored=true;horizon.CanCollide=false
+    horizon.Material=Enum.Material.SmoothPlastic
+    horizon.Color=Color3.fromRGB(0,0,0)
+    horizon.Size=Vector3.new(0.9,0.9,0.9)
+    horizon.Shape=Enum.PartType.Ball
+    horizon.Parent=bhModel
+    local photon=Instance.new("Part")
+    photon.Anchored=true;photon.CanCollide=false
+    photon.Material=Enum.Material.Neon
+    photon.Color=T.ac
+    photon.Transparency=0.4
+    photon.Size=Vector3.new(1.15,1.15,1.15)
+    photon.Shape=Enum.PartType.Ball
+    photon.Parent=bhModel
+    local photonHaze=Instance.new("Part")
+    photonHaze.Anchored=true;photonHaze.CanCollide=false
+    photonHaze.Material=Enum.Material.Neon
+    photonHaze.Color=T.ac
+    photonHaze.Transparency=0.78
+    photonHaze.Size=Vector3.new(1.4,1.4,1.4)
+    photonHaze.Shape=Enum.PartType.Ball
+    photonHaze.Parent=bhModel
+
+    local function buildRingModel(radius, tube, segments, col, baseTrans, yOff)
+        local mdl=Instance.new("Model")
+        mdl.Name="Ring"
+        local anchor=Instance.new("Part")
+        anchor.Name="Anchor"
+        anchor.Anchored=true;anchor.CanCollide=false
+        anchor.Transparency=1
+        anchor.Size=Vector3.new(0.05,0.05,0.05)
+        anchor.CFrame=CFrame.new(0, yOff, 0)
+        anchor.Parent=mdl
+        for i=1,segments do
+            local a=(i/segments)*math.pi*2
+            local x=math.cos(a)*radius
+            local z=math.sin(a)*radius
+            local p=Instance.new("Part")
+            p.Anchored=true;p.CanCollide=false
+            p.Material=Enum.Material.Neon
+            p.Color=col
+            p.Transparency=baseTrans
+            p.Size=Vector3.new(tube*1.7, tube*1.7, tube*2.4)
+            p.CFrame=CFrame.new(x, yOff, z)*CFrame.Angles(0, -a+math.pi/2, 0.14)
+            p.Parent=mdl
+            local m=Instance.new("SpecialMesh")
+            m.MeshType=Enum.MeshType.Sphere
+            m.Scale=Vector3.new(1,1,1.35)
+            m.Parent=p
+            if i%2==0 then
+                local g=Instance.new("Part")
+                g.Anchored=true;g.CanCollide=false
+                g.Material=Enum.Material.Neon
+                g.Color=col
+                g.Transparency=math.min(0.9, baseTrans+0.35)
+                g.Size=Vector3.new(tube*2.8, tube*2.8, tube*3.0)
+                g.CFrame=p.CFrame
+                g.Parent=mdl
+                local gm=Instance.new("SpecialMesh")
+                gm.MeshType=Enum.MeshType.Sphere
+                gm.Scale=Vector3.new(1.15,1.15,1.2)
+                gm.Parent=g
+            end
+        end
+        mdl.PrimaryPart=anchor
+        mdl.Parent=bhModel
+        return mdl
+    end
+
+    local ringModels={
+        {m=buildRingModel(1.2, 0.085, 20, T.ac, 0.22, 0), speed=1.7},
+        {m=buildRingModel(1.65, 0.08, 22, T.ac, 0.38, 0.02), speed=1.1},
+        {m=buildRingModel(2.15, 0.065, 24, T.ac, 0.55, -0.015), speed=0.7},
+        {m=buildRingModel(2.65, 0.05, 26, T.ac, 0.72, 0.02), speed=0.4},
+    }
+
+    -- 3 hot spots only
+    local hotSpots={}
+    for i=1,3 do
+        local hs=Instance.new("Part")
+        hs.Anchored=true;hs.CanCollide=false
+        hs.Material=Enum.Material.Neon
+        hs.Color=Color3.fromRGB(255,255,255)
+        hs.Transparency=0.2
+        hs.Size=Vector3.new(0.14,0.14,0.22)
+        hs.Shape=Enum.PartType.Ball
+        hs.Parent=bhModel
+        hotSpots[#hotSpots+1]={p=hs, phase=(i/3)*math.pi*2, radius=1.2, speed=2.2+i*0.2}
+    end
+
+    bhModel.PrimaryPart=horizon
+    vcam.CFrame=CFrame.new(Vector3.new(0.2, 1.05, 5.0), Vector3.new(0,0,0))
+
+    local starAng=0
+    local colorAcc=0
+    local starConn=RS.RenderStepped:Connect(function(dt)
+        if not bhModel or not bhModel.Parent then return end
+        starAng=starAng+dt
+        colorAcc=colorAcc+dt
+
+        pcall(function()
+            local base=CFrame.Angles(math.rad(40), starAng*0.25, math.rad(8))
+            bhModel:PivotTo(base)
+            for _,r in ipairs(ringModels) do
+                if r.m and r.m.PrimaryPart then
+                    r.m:PivotTo(base * CFrame.Angles(0, starAng*r.speed, 0))
+                end
+            end
+            for _,hs in ipairs(hotSpots) do
+                local a=hs.phase + starAng*hs.speed
+                hs.p.CFrame=base * CFrame.new(math.cos(a)*hs.radius, 0.02, math.sin(a)*hs.radius)
+            end
+        end)
+
+        -- theme colors ~4fps
+        if colorAcc>=0.25 then
+            colorAcc=0
+            local col=T.ac
+            if photon and photon.Parent then photon.Color=col end
+            if photonHaze and photonHaze.Parent then photonHaze.Color=col end
+            for _,r in ipairs(ringModels) do
+                if r.m then
+                    for _,p in ipairs(r.m:GetChildren()) do
+                        if p:IsA("BasePart") and p.Transparency<0.95 then p.Color=col end
+                    end
+                end
+            end
+            badgeStroke.Color=col
+            for li,disc in ipairs(radialLayers) do
+                if disc and disc.Parent then
+                    local k=disc:GetAttribute("GradK") or 0
+                    if k<=0 then
+                        disc.BackgroundColor3=Color3.fromRGB(0,0,0)
+                    elseif k>=1.1 then
+                        disc.BackgroundColor3=Color3.fromRGB(255,245,255)
+                    else
+                        local sm=k*k*(3-2*k)
+                        disc.BackgroundColor3=Color3.new(
+                            math.min(1, col.R*sm*1.15),
+                            math.min(1, col.G*sm*1.05),
+                            math.min(1, col.B*sm*1.25)
+                        )
+                    end
+                end
+            end
+        end
+        spGrad.Rotation=140+starAng*4
+        spStroke.Color=T.ac
+    end)
 
     local titleRow=mk("Frame",splash,{
-        Size=UDim2.new(0,520,0,56),
+        Size=UDim2.new(0,340,0,50),
         AnchorPoint=Vector2.new(.5,.5),
-        Position=UDim2.new(.5,0,.51,0),
+        Position=UDim2.new(.5,0,.55,0),
         BackgroundTransparency=1,BorderSizePixel=0,ZIndex=51
     })
     local chud=mk("TextLabel",titleRow,{
         Size=UDim2.new(.5,0,1,0),Position=UDim2.new(0,0,0,0),
         BackgroundTransparency=1,Text="CHUD",
         TextColor3=Color3.fromRGB(245,246,252),Font=Enum.Font.GothamBold,
-        TextSize=42,TextXAlignment=Enum.TextXAlignment.Right,ZIndex=51
+        TextSize=40,TextXAlignment=Enum.TextXAlignment.Right,ZIndex=51
     })
     local hub=mk("TextLabel",titleRow,{
         Size=UDim2.new(.5,0,1,0),Position=UDim2.new(.5,0,0,0),
         BackgroundTransparency=1,Text="HUB",
         TextColor3=T.ac,Font=Enum.Font.GothamBold,
-        TextSize=42,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=51
+        TextSize=40,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=51
     })
-
     local pillBg=mk("Frame",splash,{
-        Size=UDim2.new(0,48,0,22),
+        Size=UDim2.new(0,56,0,22),
         AnchorPoint=Vector2.new(.5,.5),
-        Position=UDim2.new(.5,0,.605,0),
+        Position=UDim2.new(.5,0,.63,0),
         BackgroundColor3=T.bgT,BackgroundTransparency=1,
         BorderSizePixel=0,ZIndex=51
     });corner(pillBg,11)
-    new("UIStroke",pillBg,{Color=T.ac,Thickness=0.5,Transparency=1}).Name="pillStroke"
-
+    local pillStroke=new("UIStroke",pillBg,{Color=T.ac,Thickness=0.8,Transparency=1})
     local pillLbl=mk("TextLabel",pillBg,{
-        Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text="v1",
-        TextColor3=T.ac,Font=Enum.Font.GothamBold,
-        TextSize=11,ZIndex=52
+        Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text=CH_VERSION,
+        TextColor3=T.ac,Font=Enum.Font.GothamBold,TextSize=11,ZIndex=52
     })
-
     local sepLine=mk("Frame",splash,{
-        Size=UDim2.new(0,360,0,1),
+        Size=UDim2.new(0,280,0,1),
         AnchorPoint=Vector2.new(.5,.5),
-        Position=UDim2.new(.5,0,.655,0),
-        BackgroundColor3=T.bd,BackgroundTransparency=1,
-        BorderSizePixel=0,ZIndex=51
+        Position=UDim2.new(.5,0,.68,0),
+        BackgroundColor3=T.ac,BackgroundTransparency=1,BorderSizePixel=0,ZIndex=51
     })
-
     local madeBy=mk("TextLabel",splash,{
-        Size=UDim2.new(0,300,0,16),
-        AnchorPoint=Vector2.new(.5,.5),
-        Position=UDim2.new(.5,0,.685,0),
+        Size=UDim2.new(0,300,0,14),
+        AnchorPoint=Vector2.new(.5,.5),Position=UDim2.new(.5,0,.71,0),
         BackgroundTransparency=1,Text="MADE BY",
-        TextColor3=T.txD,Font=Enum.Font.GothamBold,
-        TextSize=9,ZIndex=51
+        TextColor3=T.txD,Font=Enum.Font.GothamBold,TextSize=9,ZIndex=51
     })
-
     local authors=mk("TextLabel",splash,{
-        Size=UDim2.new(0,300,0,22),
-        AnchorPoint=Vector2.new(.5,.5),
-        Position=UDim2.new(.5,0,.715,0),
+        Size=UDim2.new(0,300,0,20),
+        AnchorPoint=Vector2.new(.5,.5),Position=UDim2.new(.5,0,.74,0),
         BackgroundTransparency=1,Text="Proxy Phalanxs",
-        TextColor3=T.txM,Font=Enum.Font.Gotham,
-        TextSize=14,ZIndex=51
+        TextColor3=T.txM,Font=Enum.Font.Gotham,TextSize=13,ZIndex=51
     })
-
     local barTrack=mk("Frame",splash,{
-        Size=UDim2.new(0,320,0,3),
-        AnchorPoint=Vector2.new(.5,.5),
-        Position=UDim2.new(.5,0,.79,0),
-        BackgroundColor3=T.off,BackgroundTransparency=1,
-        BorderSizePixel=0,ZIndex=51
+        Size=UDim2.new(0,300,0,4),
+        AnchorPoint=Vector2.new(.5,.5),Position=UDim2.new(.5,0,.82,0),
+        BackgroundColor3=T.off,BackgroundTransparency=1,BorderSizePixel=0,ZIndex=51
     });corner(barTrack,2)
     local barFill=mk("Frame",barTrack,{
         Size=UDim2.new(0,0,1,0),
-        BackgroundColor3=T.ac,BackgroundTransparency=1,
-        BorderSizePixel=0,ZIndex=52
+        BackgroundColor3=T.ac,BackgroundTransparency=1,BorderSizePixel=0,ZIndex=52
     });corner(barFill,2)
-
     local statusLbl=mk("TextLabel",splash,{
         Size=UDim2.new(0,320,0,16),
-        AnchorPoint=Vector2.new(.5,.5),
-        Position=UDim2.new(.5,0,.815,0),
+        AnchorPoint=Vector2.new(.5,.5),Position=UDim2.new(.5,0,.865,0),
         BackgroundTransparency=1,Text="Initialising...",
-        TextColor3=T.txD,Font=Enum.Font.Gotham,
-        TextSize=10,ZIndex=51
+        TextColor3=T.txD,Font=Enum.Font.Gotham,TextSize=11,ZIndex=51
     })
 
-    local allFrames={titleRow,pillBg,sepLine,barTrack}
-    local allText={chud,hub,pillLbl,madeBy,authors,statusLbl,starOuter}
+    local allFrames={titleRow,pillBg,sepLine,barTrack,logoBadge}
+    local allText={chud,hub,pillLbl,madeBy,authors,statusLbl}
 
     local function fadeIn(dur)
         local ti=TweenInfo.new(dur,Enum.EasingStyle.Quad,Enum.EasingDirection.Out)
+        TwS:Create(splash,ti,{BackgroundTransparency=0.08}):Play()
+        TwS:Create(dim,ti,{BackgroundTransparency=0.35}):Play()
         for _,f in ipairs(allFrames) do
-            local tr=f==barTrack and 0 or (f==pillBg and 0 or 1)
+            local tr=(f==barTrack and 0) or (f==pillBg and 0) or (f==logoBadge and 0.08) or 1
             TwS:Create(f,ti,{BackgroundTransparency=tr}):Play()
         end
+        for _,disc in ipairs(radialLayers) do
+            if disc and disc.Parent then
+                local targetT=disc:GetAttribute("TargetT") or 0.7
+                disc.BackgroundTransparency=1
+                TwS:Create(disc,ti,{BackgroundTransparency=targetT}):Play()
+            end
+        end
+        if badgeStroke then TwS:Create(badgeStroke,ti,{Transparency=0.5}):Play() end
         for _,t in ipairs(allText) do TwS:Create(t,ti,{TextTransparency=0}):Play() end
-        local ps=pillBg:FindFirstChild("pillStroke")
-        if ps then TwS:Create(ps,ti,{Transparency=0}):Play() end
+        TwS:Create(pillStroke,ti,{Transparency=0.2}):Play()
         TwS:Create(barFill,ti,{BackgroundTransparency=0}):Play()
+        TwS:Create(spStroke,ti,{Transparency=0.25}):Play()
     end
-
     local function fadeOut(dur)
         local ti=TweenInfo.new(dur,Enum.EasingStyle.Quad,Enum.EasingDirection.In)
         TwS:Create(splash,TweenInfo.new(dur,Enum.EasingStyle.Back,Enum.EasingDirection.In),
-            {BackgroundTransparency=1,Size=UDim2.new(0,300,0,340)}):Play()
-        for _,f in ipairs(allFrames) do TwS:Create(f,ti,{BackgroundTransparency=1}):Play() end
+            {BackgroundTransparency=1,Size=UDim2.new(0,320,0,400)}):Play()
+        TwS:Create(dim,ti,{BackgroundTransparency=1}):Play()
+        for _,f in ipairs(allFrames) do pcall(function() TwS:Create(f,ti,{BackgroundTransparency=1}):Play() end) end
         for _,t in ipairs(allText) do TwS:Create(t,ti,{TextTransparency=1}):Play() end
         TwS:Create(barFill,ti,{BackgroundTransparency=1}):Play()
-        local ps=pillBg:FindFirstChild("pillStroke")
-        if ps then TwS:Create(ps,ti,{Transparency=1}):Play() end
+        TwS:Create(pillStroke,ti,{Transparency=1}):Play()
+        TwS:Create(spStroke,ti,{Transparency=1}):Play()
+        pcall(function() TwS:Create(vp,ti,{ImageTransparency=1}):Play() end)
     end
 
     task.spawn(function()
-        fadeIn(0.5)
-        task.wait(0.5)
-
+        fadeIn(0.55)
+        task.wait(0.4)
         local steps={
-            {txt="Connecting...",   pct=0.20, wait=0.45},
-            {txt="Loading modules...",  pct=0.52, wait=0.55},
-            {txt="Initialising ESP...", pct=0.82, wait=0.50},
-            {txt="Ready",              pct=1.00, wait=0.30},
+            {txt="Connecting...", pct=0.18, wait=0.4},
+            {txt="Loading modules...", pct=0.42, wait=0.5},
+            {txt="Initialising ESP...", pct=0.68, wait=0.45},
+            {txt="Applying theme...", pct=0.88, wait=0.4},
+            {txt="Ready", pct=1.00, wait=0.35},
         }
         for _,step in ipairs(steps) do
             statusLbl.Text=step.txt
@@ -9407,17 +10028,20 @@ local function runSplash()
                 {Size=UDim2.new(step.pct,0,1,0)}):Play()
             task.wait(step.wait)
         end
-
-        task.wait(0.2)
-        fadeOut(0.38)
-        task.wait(0.42)
+        task.wait(0.15)
+        fadeOut(0.4)
+        task.wait(0.45)
+        if starConn then starConn:Disconnect() end
         splash:Destroy()
-
+        dim:Destroy()
         win.Visible=true
         win.Size=UDim2.new(0,WW*0.88,0,WH*0.88)
         win.BackgroundTransparency=0.65
-        TwS:Create(win,TweenInfo.new(0.4,Enum.EasingStyle.Back,Enum.EasingDirection.Out),
+        TwS:Create(win,TweenInfo.new(0.45,Enum.EasingStyle.Back,Enum.EasingDirection.Out),
             {Size=UDim2.new(0,WW,0,WH),BackgroundTransparency=0.18}):Play()
+        task.delay(0.55, function()
+            if type(S._showChangelog)=="function" then pcall(S._showChangelog) end
+        end)
     end)
 end
 
